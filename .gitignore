@@ -1,8 +1,11 @@
 # Dependencies
 node_modules/
+node_modules/bin
 .env
 .venv/
 venv/pyth
+out/
+dist/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -224,3 +227,4 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
