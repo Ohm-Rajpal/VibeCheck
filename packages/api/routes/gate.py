@@ -1,41 +1,44 @@
-"""Gate routes — Layer 1 + 2A endpoints."""
-from fastapi import APIRouter
-from pydantic import BaseModel
-from typing import List, Optional
+"""Gate routes - comprehension checkpoint endpoints."""
+from fastapi import APIRouter, File, Response, UploadFile
+
+from ..schemas.gate import (
+    SpeakRequest,
+    TranscribeResponse,
+    VerifyRequest,
+    VerifyResponse,
+)
+from ..services.checkpoints import (
+    evaluate_transcript,
+    lookup_question,
+)
+from ..services.elevenlabs import synthesize_speech, transcribe_audio
 
 router = APIRouter()
 
 
-class GenerateRequest(BaseModel):
-    diff: str
-    claude_md: str = ""
-    user_email: str
-    diff_lines: int
-    mode: str  # 'inline' | 'commit' | 'devin_pr'
-    skipped_sections: Optional[List[str]] = None
+@router.post("/verify", response_model=VerifyResponse)
+async def verify(req: VerifyRequest) -> VerifyResponse:
+    """Evaluate a transcribed spoken answer against one checkpoint question."""
+    question = lookup_question(req)
+    score = await evaluate_transcript(req.transcript, question)
+    return VerifyResponse(checkpoint_id=req.checkpoint_id, score=score)
 
 
-class GenerateResponse(BaseModel):
-    session_id: str
-    questions: List[dict]
+@router.post("/transcribe", response_model=TranscribeResponse)
+async def transcribe_answer(audio: UploadFile = File(...)) -> TranscribeResponse:
+    """Transcribe a spoken quiz answer with ElevenLabs Speech to Text."""
+    payload = await transcribe_audio(audio)
+    return TranscribeResponse(
+        text=payload.get("text", ""),
+        language_code=payload.get("language_code"),
+        language_probability=payload.get("language_probability"),
+    )
 
 
-class VerifyRequest(BaseModel):
-    session_id: str
-    checkpoint_id: str
-    transcript: str
-
-
-@router.post("/generate", response_model=GenerateResponse)
-async def generate(req: GenerateRequest) -> GenerateResponse:
-    # TODO: call ai.question_gen.generate_questions, persist session in MongoDB.
-    return GenerateResponse(session_id="stub-session", questions=[])
-
-
-@router.post("/verify")
-async def verify(req: VerifyRequest):
-    # TODO: call ai.evaluator.evaluate, persist score, return ComprehensionScore.
-    return {"score": None}
+@router.post("/speak")
+async def speak_feedback(req: SpeakRequest) -> Response:
+    """Generate playable feedback audio from evaluator text."""
+    return await synthesize_speech(req.text, req.voice_id)
 
 
 @router.post("/agent-commit")
