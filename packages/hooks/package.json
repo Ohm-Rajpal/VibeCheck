@@ -1,0 +1,14 @@
+{
+  "name": "vibecheck-hooks",
+  "version": "0.0.1",
+  "description": "Husky pre-commit hook for VibeCheck Layer 2A.",
+  "bin": {
+    "vibecheck-pre-commit": "./pre-commit.js"
+  },
+  "scripts": {
+    "install-hook": "husky install && husky add .husky/pre-commit 'node packages/hooks/pre-commit.js'"
+  },
+  "devDependencies": {
+    "husky": "^9.1.0"
+  }
+}

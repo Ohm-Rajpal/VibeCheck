@@ -1,0 +1,53 @@
+{
+  "name": "vibecheck",
+  "displayName": "VibeCheck",
+  "description": "Comprehension checkpoints for AI-generated code (Windsurf + Devin).",
+  "version": "0.0.1",
+  "publisher": "vibecheck",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "vibecheck.showGrowth",
+        "title": "VibeCheck: Show Growth Dashboard"
+      },
+      {
+        "command": "vibecheck.openCheckpoint",
+        "title": "VibeCheck: Open Checkpoint Panel"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "vibecheck",
+          "title": "VibeCheck",
+          "icon": "$(pulse)"
+        }
+      ]
+    },
+    "views": {
+      "vibecheck": [
+        {
+          "id": "vibecheck.growth",
+          "name": "Growth",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -w -p .",
+    "build:webview": "cd webview && npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}
