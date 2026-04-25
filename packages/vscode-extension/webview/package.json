@@ -9,10 +9,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "lucide-react": "^0.460.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "recharts": "^2.12.7",
-    "lucide-react": "^0.460.0"
+    "typescript": "^6.0.3"
   },
   "devDependencies": {
     "@types/react": "^18.3.3",

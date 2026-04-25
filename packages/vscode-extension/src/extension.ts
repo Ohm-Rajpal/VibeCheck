@@ -7,6 +7,8 @@ import { activateGrowthSidebar } from './growth/sidebar';
 const CHECKPOINT_PORT = Number(process.env.CHECKPOINT_PORT ?? 3456);
 
 export function activate(context: vscode.ExtensionContext) {
+  console.log('[VibeCheck] activate() called');
+
   // 1. Local HTTP server: receives notifications from pre-commit hook + Devin webhook.
   const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/checkpoint') {
