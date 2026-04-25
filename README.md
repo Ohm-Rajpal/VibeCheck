@@ -16,3 +16,73 @@ AI agents generate code faster than humans can understand it. Code passes CI, lo
 ## Status
 
 Skeleton + working Layer 1 detection. See `packages/vscode-extension/src/detection/` for the multi-signal logic. Open the `VibeCheck` Output Channel in the Extension Dev Host to watch detection decisions in real time.
+
+## Install (Linux / macOS)
+
+### Prerequisites
+
+- **Node.js 18+** and **npm** ([install guide](https://nodejs.org/))
+- **VSCode** (or any VSCode-compatible editor: Cursor, Windsurf, etc.)
+- The `code` CLI in your `PATH`:
+  - **Linux**: usually installed automatically with VSCode.
+  - **macOS**: open VSCode → `Cmd+Shift+P` → run **`Shell Command: Install 'code' command in PATH`**.
+
+Verify both are available:
+
+```bash
+node --version    # should print v18+ or higher
+code --version    # should print VSCode version info
+```
+
+### Build and install the extension
+
+From the repo root:
+
+```bash
+# 1. Install build deps for the extension
+cd packages/vscode-extension
+npm install
+
+# 2. Compile TypeScript and package into a .vsix
+npm run compile
+npx @vscode/vsce package --no-dependencies --out vibecheck-0.0.1.vsix
+
+# 3. Install the .vsix into your VSCode
+code --install-extension vibecheck-0.0.1.vsix
+```
+
+Then reload any open VSCode window: `Ctrl+Shift+P` (or `Cmd+Shift+P` on macOS) → **`Developer: Reload Window`**.
+
+### Verify it's working
+
+1. Look at the bottom-right status bar — it should show `🟣 VibeCheck: clean`.
+2. Open any code file.
+3. Run `Ctrl+Shift+P` → **`VibeCheck: Simulate AI Burst (test detection)`**.
+4. You should see:
+   - A yellow highlight + `🧠 AI — needs check` margin label on the inserted lines.
+   - A toast in the bottom-right: *"VibeCheck: AI just wrote ~21 lines... Quick check?"*
+   - The status bar updates to `🧠 1 unverified · 1 file`.
+
+### Installing in Cursor / Windsurf / other VSCode forks
+
+The VSIX is portable. Use that editor's CLI or UI:
+
+- **Cursor**: `cursor --install-extension vibecheck-0.0.1.vsix`
+- **Windsurf**: `windsurf --install-extension vibecheck-0.0.1.vsix`
+- **Any fork**: open the Extensions panel (`Ctrl+Shift+X`) → click the `…` menu at the top → **`Install from VSIX…`** → select the file.
+
+### Uninstall
+
+```bash
+code --uninstall-extension vibecheck.vibecheck
+```
+
+### Iteration tip
+
+While developing, skip the install step and use the **Extension Development Host**:
+
+```bash
+code --extensionDevelopmentPath=$(pwd)/packages/vscode-extension /path/to/test/repo
+```
+
+This launches a sandboxed VSCode window running your latest compiled code without touching your global install.

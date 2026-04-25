@@ -39,6 +39,9 @@ class RegionTracker {
     constructor() {
         this.byFile = new Map();
         this.listeners = [];
+        // Optional logger plugged in from the extension activation. Keeps regionTracker
+        // free of a hard dependency on vscode's OutputChannel API.
+        this.logFn = () => { };
     }
     add(region) {
         const list = this.byFile.get(region.file) ?? [];
@@ -150,6 +153,64 @@ class RegionTracker {
             this.byFile.set(file, survivors);
             this.emit(file);
         }
+    }
+    // After a non-AI edit, reconcile each region against the actual document
+    // text:
+    //   1. clamp endLine to the document's last line (regions can drift beyond
+    //      end-of-file when deletions are applied via `applyEdit`)
+    //   2. trim leading & trailing blank lines from the region's bounds (so a
+    //      region whose tail was deleted but left blank lines doesn't keep
+    //      highlighting + labelling those blanks)
+    //   3. drop the region entirely if every line within is now whitespace
+    //
+    // This is called from velocityDetector after each `applyEdit` so the
+    // highlights track the real surviving AI content, not a stale envelope.
+    gcStaleRegions(doc) {
+        const file = doc.fileName;
+        const list = this.byFile.get(file);
+        if (!list || list.length === 0)
+            return;
+        const lineCount = doc.lineCount;
+        const survivors = [];
+        let dropped = 0;
+        let trimmed = 0;
+        for (const r of list) {
+            if (r.startLine < 0 || r.startLine >= lineCount) {
+                dropped++; // out of bounds → drop
+                continue;
+            }
+            const oldStart = r.startLine;
+            const oldEnd = r.endLine;
+            let newStart = r.startLine;
+            let newEnd = Math.min(r.endLine, lineCount - 1);
+            // Trim leading blanks.
+            while (newStart <= newEnd && doc.lineAt(newStart).text.trim() === '') {
+                newStart++;
+            }
+            // Trim trailing blanks.
+            while (newEnd >= newStart && doc.lineAt(newEnd).text.trim() === '') {
+                newEnd--;
+            }
+            if (newStart > newEnd) {
+                dropped++; // entire region collapsed to whitespace → drop
+                continue;
+            }
+            if (newStart !== oldStart || newEnd !== oldEnd) {
+                r.startLine = newStart;
+                r.endLine = newEnd;
+                trimmed++;
+            }
+            survivors.push(r);
+        }
+        if (dropped > 0 || trimmed > 0) {
+            this.byFile.set(file, survivors);
+            this.emit(file);
+            const short = file.split('/').pop() ?? file;
+            this.logFn(`gc ${short}: dropped=${dropped} trimmed=${trimmed} remaining=${survivors.length}`);
+        }
+    }
+    setLogger(fn) {
+        this.logFn = fn;
     }
     onChange(listener) {
         this.listeners.push(listener);

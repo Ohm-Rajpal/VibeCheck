@@ -59,6 +59,8 @@ function log(line) {
 function activateVelocityDetector(context) {
     output = vscode.window.createOutputChannel('VibeCheck');
     context.subscriptions.push(output);
+    // Forward regionTracker diagnostics through the same channel.
+    regionTracker_1.regionTracker.setLogger(log);
     log('velocity detector active');
     // Make the channel visible without stealing keyboard focus, so the
     // dropdown is preselected to "VibeCheck" the first time the user opens
@@ -134,6 +136,11 @@ function activateVelocityDetector(context) {
                 const insertedLines = c.text === '' ? 0 : c.text.split('\n').length - 1;
                 regionTracker_1.regionTracker.applyEdit(event.document.fileName, c.range.start.line, c.range.end.line, insertedLines);
             }
+            // Drop any regions whose surviving content is now all-whitespace —
+            // happens when the user deletes the AI body but leaves a blank line
+            // behind, which `applyEdit` alone can't detect (it only sees line
+            // numbers, not text).
+            regionTracker_1.regionTracker.gcStaleRegions(event.document);
             return;
         }
         if (!isAIBurst)
