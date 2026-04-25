@@ -224,3 +224,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / TypeScript
+out/
+*.tsbuildinfo
+.DS_Store
