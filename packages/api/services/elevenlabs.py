@@ -2,10 +2,12 @@
 import os
 
 import httpx
-from fastapi import HTTPException, Response, UploadFile
+from fastapi import HTTPException, UploadFile
+from starlette.responses import Response, StreamingResponse
 
 ELEVENLABS_STT_URL = "https://api.elevenlabs.io/v1/speech-to-text"
 ELEVENLABS_TTS_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+ELEVENLABS_TTS_STREAM_URL = "https://api.elevenlabs.io/v1/text-to-speech/{voice_id}/stream"
 ELEVENLABS_STT_MODEL_ID = os.getenv("ELEVENLABS_STT_MODEL", "scribe_v2")
 ELEVENLABS_TTS_MODEL_ID = os.getenv("ELEVENLABS_TTS_MODEL", "eleven_multilingual_v2")
 ELEVENLABS_TTS_OUTPUT_FORMAT = os.getenv("ELEVENLABS_TTS_OUTPUT_FORMAT", "mp3_44100_128")
@@ -95,6 +97,70 @@ async def synthesize_speech(text: str, voice_id: str | None = None) -> Response:
         headers={
             "Content-Disposition": 'inline; filename="vibecheck-feedback.mp3"',
             "Content-Length": str(len(audio)),
+            "X-VibeCheck-Voice-Id": selected_voice_id,
+        },
+    )
+
+
+async def stream_speech(text: str, voice_id: str | None = None) -> StreamingResponse:
+    api_key = get_api_key()
+    text = text.strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    selected_voice_id = voice_id or ELEVENLABS_VOICE_ID
+
+    async def audio_chunks():
+        try:
+            async with httpx.AsyncClient(timeout=None) as client:
+                async with client.stream(
+                    "POST",
+                    ELEVENLABS_TTS_STREAM_URL.format(voice_id=selected_voice_id),
+                    headers={
+                        "xi-api-key": api_key,
+                        "accept": "audio/mpeg",
+                        "content-type": "application/json",
+                    },
+                    params={"output_format": ELEVENLABS_TTS_OUTPUT_FORMAT},
+                    json={"text": text, "model_id": ELEVENLABS_TTS_MODEL_ID},
+                ) as response:
+                    if response.status_code >= 400:
+                        body = await response.aread()
+                        raise HTTPException(
+                            status_code=response.status_code,
+                            detail=(
+                                "ElevenLabs speech stream failed: "
+                                f"{body.decode('utf-8', errors='replace')}"
+                            ),
+                        )
+
+                    content_type = response.headers.get("content-type", "")
+                    if "application/json" in content_type or "text/" in content_type:
+                        body = await response.aread()
+                        raise HTTPException(
+                            status_code=502,
+                            detail=(
+                                "ElevenLabs returned non-audio stream content: "
+                                f"{body.decode('utf-8', errors='replace')}"
+                            ),
+                        )
+
+                    async for chunk in response.aiter_bytes():
+                        if chunk:
+                            yield chunk
+        except HTTPException:
+            raise
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"Could not reach ElevenLabs speech stream service: {exc}",
+            ) from exc
+
+    return StreamingResponse(
+        audio_chunks(),
+        media_type="audio/mpeg",
+        headers={
+            "Content-Disposition": 'inline; filename="vibecheck-feedback-stream.mp3"',
             "X-VibeCheck-Voice-Id": selected_voice_id,
         },
     )
