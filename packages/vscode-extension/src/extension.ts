@@ -5,6 +5,7 @@ import { activateDecorator } from './detection/decorator';
 import { regionTracker } from './detection/regionTracker';
 import { openCheckpointPanel } from './checkpoint/panel';
 import { activateGrowthSidebar } from './growth/sidebar';
+import { generateQuestionsFromGitDiff } from './analysis/gitDiffAst';
 
 const CHECKPOINT_PORT = Number(process.env.CHECKPOINT_PORT ?? 3456);
 
@@ -119,6 +120,35 @@ export function activate(context: vscode.ExtensionContext) {
         questions.length ? questions : [],
         'pre_commit'
       );
+      openCheckpointPanel(context, 'manual', [], 'pre_commit');
+    }),
+    vscode.commands.registerCommand('vibecheck.analyzeGitDiff', () => {
+      const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+      if (!workspaceRoot) {
+        vscode.window.showErrorMessage(
+          'VibeCheck: Open a workspace folder to analyze git diff.'
+        );
+        return;
+      }
+
+      try {
+        const questions = generateQuestionsFromGitDiff(workspaceRoot);
+        openCheckpointPanel(
+          context,
+          `git-diff-${Date.now()}`,
+          questions,
+          'pre_commit'
+        );
+        vscode.window.showInformationMessage(
+          `VibeCheck: Generated ${questions.length} AST-based question(s) from git diff.`
+        );
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : 'Unknown analysis error';
+        vscode.window.showErrorMessage(
+          `VibeCheck: Failed to analyze git diff: ${message}`
+        );
+      }
     })
   );
 }

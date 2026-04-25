@@ -80,3 +80,10 @@ export interface VerifyRequest {
 export interface VerifyResponse {
   score: ComprehensionScore;
 }
+
+export interface ChangedFunction {
+  filePath: string;
+  functionName: string;
+  startLine: number;
+  endLine: number;
+}

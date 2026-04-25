@@ -42,8 +42,10 @@ const decorator_1 = require("./detection/decorator");
 const regionTracker_1 = require("./detection/regionTracker");
 const panel_1 = require("./checkpoint/panel");
 const sidebar_1 = require("./growth/sidebar");
+const gitDiffAst_1 = require("./analysis/gitDiffAst");
 const CHECKPOINT_PORT = Number(process.env.CHECKPOINT_PORT ?? 3456);
 function activate(context) {
+    console.log('[VibeCheck] activate() called');
     console.log('[VibeCheck] activate() called');
     // 1. Local HTTP server: receives notifications from pre-commit hook + Devin webhook.
     const server = http.createServer((req, res) => {
@@ -126,6 +128,7 @@ function activate(context) {
         const pos = editor.selection.active;
         await editor.edit((builder) => builder.insert(pos, sample));
     }), vscode.commands.registerCommand('vibecheck.openCheckpoint', () => {
+
         const regions = regionTracker_1.regionTracker.getUnverified();
         const questions = regions.map((r) => ({
             question: `Walk me through ${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}.`,
@@ -134,6 +137,22 @@ function activate(context) {
             file: r.file.split('/').pop() ?? r.file,
         }));
         (0, panel_1.openCheckpointPanel)(context, `manual-${Date.now()}`, questions.length ? questions : [], 'pre_commit');
+
+    }), vscode.commands.registerCommand('vibecheck.analyzeGitDiff', () => {
+        const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!workspaceRoot) {
+            vscode.window.showErrorMessage('VibeCheck: Open a workspace folder to analyze git diff.');
+            return;
+        }
+        try {
+            const questions = (0, gitDiffAst_1.generateQuestionsFromGitDiff)(workspaceRoot);
+            (0, panel_1.openCheckpointPanel)(context, `git-diff-${Date.now()}`, questions, 'pre_commit');
+            vscode.window.showInformationMessage(`VibeCheck: Generated ${questions.length} AST-based question(s) from git diff.`);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : 'Unknown analysis error';
+            vscode.window.showErrorMessage(`VibeCheck: Failed to analyze git diff: ${message}`);
+        }
     }));
 }
 function updateStatusBar(item) {

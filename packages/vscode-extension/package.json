@@ -23,6 +23,10 @@
       {
         "command": "vibecheck.simulateAIBurst",
         "title": "VibeCheck: Simulate AI Burst (test detection)"
+      },
+      {
+        "command": "vibecheck.analyzeGitDiff",
+        "title": "VibeCheck: Analyze Git Diff (AST)"
       }
     ],
     "viewsContainers": {
