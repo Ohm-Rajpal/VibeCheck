@@ -19,6 +19,10 @@
       {
         "command": "vibecheck.openCheckpoint",
         "title": "VibeCheck: Open Checkpoint Panel"
+      },
+      {
+        "command": "vibecheck.simulateAIBurst",
+        "title": "VibeCheck: Simulate AI Burst (test detection)"
       }
     ],
     "viewsContainers": {

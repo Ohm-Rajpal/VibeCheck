@@ -11,24 +11,31 @@ const BACKEND = process.env.BACKEND_URL || 'http://localhost:8000';
 const EXT_PORT = Number(process.env.CHECKPOINT_PORT || 3456);
 
 // ── Agent detection ───────────────────────────────────────
-const isAgentCommit =
-  process.env.CLAUDE_CODE ||
-  process.env.CURSOR_AGENT ||
-  process.env.WINDSURF_AGENT ||
-  process.env.CI;
-
-// ── Devin detection ───────────────────────────────────────
-const committerEmail = safeExec('git config user.email');
-const DEVIN_EMAILS = [
+// keep in sync with packages/vscode-extension/src/detection/agents.ts
+const KNOWN_AGENT_EMAILS = [
   'devin-ai-integration[bot]@users.noreply.github.com',
   'devin@cognition.ai',
+  'noreply@anthropic.com',
+  'copilot-swe-agent[bot]@users.noreply.github.com',
 ];
-const isDevin =
-  DEVIN_EMAILS.some((e) => committerEmail.includes(e)) ||
-  !!process.env.DEVIN_SESSION_ID;
+const KNOWN_AGENT_ENV_VARS = [
+  'CLAUDE_CODE',
+  'CURSOR_AGENT',
+  'WINDSURF_AGENT',
+  'DEVIN_SESSION_ID',
+  'CI',
+];
 
-if (isAgentCommit || isDevin) {
-  // Log but never block agent commits.
+const committerEmail = safeExec('git config user.email').toLowerCase();
+const isAgentEmail = KNOWN_AGENT_EMAILS.some((e) =>
+  committerEmail.includes(e.toLowerCase())
+);
+const isAgentEnv = KNOWN_AGENT_ENV_VARS.some((v) => !!process.env[v]);
+const isAgentCommit = isAgentEmail || isAgentEnv;
+
+if (isAgentCommit) {
+  // Log but never block agent commits — they get reviewed at PR time
+  // (Layer 2B) or via the Gemma diff classifier (next sprint).
   // TODO: POST /gate/agent-commit
   process.exit(0);
 }
