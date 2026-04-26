@@ -44,10 +44,15 @@
       ]
     }
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Ohm-Rajpal/VibeCheck"
+  },
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
-    "build:webview": "cd webview && npm run build"
+    "build:webview": "cd webview && npm run build",
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
