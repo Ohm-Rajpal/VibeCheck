@@ -1,22 +1,17 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
-  Sparkles,
-  ChevronLeft,
-  ChevronRight,
-  Check,
-  X,
-  AlertTriangle,
-  FileCode,
+  Brain,
   Send,
   Mic,
-  SkipForward,
+  Type as TypeIcon,
+  Volume2,
+  Copy,
+  Check,
+  ArrowRight,
+  RefreshCcw,
+  Square,
+  Sparkles,
 } from 'lucide-react';
-import QuestionCard from './components/QuestionCard.jsx';
-import VoiceButton from './components/VoiceButton.jsx';
-import ScoreFeedback from './components/ScoreFeedback.jsx';
-import OverrideModal from './components/OverrideModal.jsx';
-import ProgressDots from './components/ProgressDots.jsx';
-import TriggerBadge from './components/TriggerBadge.jsx';
 
 const vscodeApi =
   typeof window !== 'undefined' && typeof window.acquireVsCodeApi === 'function'
@@ -39,442 +34,532 @@ const MOCK = {
       code_context: 'extension.ts:42-58',
       file: 'extension.ts',
     },
-    {
-      question:
-        'What happens when onDidChangeTextDocument fires while a burst is already in progress?',
-      concept_tag: 'burst aggregation',
-      code_context: 'velocityDetector.ts:80-107',
-      file: 'velocityDetector.ts',
-    },
   ],
 };
 
+function triggerLabel(t) {
+  if (t === 'pre_commit') return 'Pre-commit Check';
+  if (t === 'devin_pr') return 'Devin PR Review';
+  return 'AI Burst Detected';
+}
+
+function formatTime(sec) {
+  const m = Math.floor(sec / 60);
+  const s = String(sec % 60).padStart(2, '0');
+  return `${m}:${s}`;
+}
+
 export default function CheckpointApp({ init }) {
-  const data = init && init.questions ? init : MOCK;
-  const questions = data.questions ?? [];
+  const data = init && init.questions && init.questions.length ? init : MOCK;
+  const question = data.questions[0]; // single-question flow per the design spec
+  const sessionId = data.sessionId;
+  const trigger = data.trigger;
+  const checkpointId = `${sessionId}-0`;
 
-  const [index, setIndex] = useState(0);
-  const [mode, setMode] = useState('voice'); // 'voice' | 'text'
-  const [transcript, setTranscript] = useState('');
-  const [submitting, setSubmitting] = useState(false);
-  const [scores, setScores] = useState({}); // checkpointId -> score
-  const [overrideOpen, setOverrideOpen] = useState(false);
+  const [mode, setMode] = useState('text'); // 'text' | 'audio'
+  const [textAnswer, setTextAnswer] = useState('');
+  const [recState, setRecState] = useState('ready'); // 'ready' | 'recording' | 'complete'
+  const [duration, setDuration] = useState(0);
+  const [audioTranscript, setAudioTranscript] = useState('');
+  const [submittedPayload, setSubmittedPayload] = useState(null);
+  const [submitted, setSubmitted] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  const current = questions[index];
-  const checkpointId = useMemo(
-    () => `${data.sessionId}-${index}`,
-    [data.sessionId, index]
-  );
-  const score = scores[checkpointId];
-  const isLast = index === questions.length - 1;
-
-  // Listen for SCORE messages from the extension host.
+  // Listen for SCORE messages from the extension host (currently we transition
+  // to the success view immediately on submit; SCORE is captured but unused).
   useEffect(() => {
     function onMessage(e) {
-      const msg = e.data;
-      if (msg?.type === 'SCORE') {
-        setScores((prev) => ({ ...prev, [msg.checkpointId]: msg.score }));
-        setSubmitting(false);
-      }
+      // Hook here later if the host sends SCORE/feedback to display.
     }
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
-  // Keyboard shortcut: Cmd/Ctrl+Enter submits.
-  useEffect(() => {
-    function onKey(e) {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && transcript.trim() && !submitting) {
-        submit();
-      }
-      if (e.key === 'Escape' && overrideOpen) setOverrideOpen(false);
-    }
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  });
-
   function submit() {
-    if (!transcript.trim()) return;
-    setSubmitting(true);
-    send({
-      type: 'SUBMIT_TRANSCRIPT',
-      sessionId: data.sessionId,
-      checkpointId,
-      transcript: transcript.trim(),
+    if (mode === 'text') {
+      const value = textAnswer.trim();
+      if (!value) return;
+      send({ type: 'SUBMIT_TRANSCRIPT', sessionId, checkpointId, transcript: value });
+      setSubmittedPayload({ type: 'text', value });
+    } else {
+      const value = audioTranscript.trim();
+      if (recState !== 'complete' || !value) return;
+      send({ type: 'SUBMIT_TRANSCRIPT', sessionId, checkpointId, transcript: value });
+      setSubmittedPayload({ type: 'audio', value, duration });
+    }
+    setSubmitted(true);
+  }
+
+  function reset() {
+    setSubmitted(false);
+    setSubmittedPayload(null);
+    setTextAnswer('');
+    setAudioTranscript('');
+    setRecState('ready');
+    setDuration(0);
+    setCopied(false);
+  }
+
+  function copyAnswer() {
+    const value = submittedPayload?.value;
+    if (!value) return;
+    navigator.clipboard?.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1600);
     });
   }
 
-  function pass() {
-    send({ type: 'PASS', sessionId: data.sessionId, checkpointId });
-    next();
-  }
-
-  function next() {
-    setTranscript('');
-    if (index < questions.length - 1) setIndex((i) => i + 1);
-    else send({ type: 'CLOSE' });
-  }
-
-  function prev() {
-    if (index === 0) return;
-    setTranscript('');
-    setIndex((i) => i - 1);
-  }
-
-  function override(reason) {
-    send({ type: 'OVERRIDE', sessionId: data.sessionId, reason });
-    setOverrideOpen(false);
-    send({ type: 'CLOSE' });
-  }
-
-  function retry() {
-    setScores((prev) => {
-      const next = { ...prev };
-      delete next[checkpointId];
-      return next;
-    });
-    setTranscript('');
-  }
-
-  if (!current) return <EmptyState />;
+  const canSubmit =
+    (mode === 'text' && textAnswer.trim().length > 0) ||
+    (mode === 'audio' && recState === 'complete' && audioTranscript.trim().length > 0);
 
   return (
-    <div style={styles.root}>
-      <header style={styles.header}>
-        <div style={styles.headerLeft}>
-          <TriggerBadge trigger={data.trigger} />
-          <span style={styles.sessionId}>
-            session {String(data.sessionId).slice(0, 14)}…
-          </span>
-        </div>
-        <button
-          style={styles.iconBtn}
-          onClick={() => send({ type: 'CLOSE' })}
-          aria-label="Close"
-          title="Close (Esc)"
-        >
-          <X size={16} />
-        </button>
-      </header>
-
-      <ProgressDots total={questions.length} current={index} />
-
-      <main style={styles.main} className="vc-fade-in" key={index}>
-        <QuestionCard question={current} />
-
-        {!score && (
-          <section style={styles.answerSection}>
-            <div style={styles.tabs}>
-              <Tab
-                active={mode === 'voice'}
-                onClick={() => setMode('voice')}
-                icon={<Mic size={14} />}
-                label="Voice"
-              />
-              <Tab
-                active={mode === 'text'}
-                onClick={() => setMode('text')}
-                icon={<FileCode size={14} />}
-                label="Text"
-              />
-            </div>
-
-            {mode === 'voice' && (
-              <VoiceButton
-                onTranscript={(t) =>
-                  setTranscript((prev) => `${prev}${prev ? ' ' : ''}${t}`)
-                }
-              />
-            )}
-
-            <textarea
-              value={transcript}
-              onChange={(e) => setTranscript(e.target.value)}
-              placeholder={
-                mode === 'voice'
-                  ? 'Your transcribed answer will appear here. Edit before submitting.'
-                  : 'Explain in your own words…'
-              }
-              style={styles.textarea}
-              rows={5}
-            />
-
-            <div style={styles.hintRow}>
-              <span style={styles.hint}>
-                <kbd style={styles.kbd}>⌘</kbd>
-                <kbd style={styles.kbd}>↵</kbd> submit ·{' '}
-                <kbd style={styles.kbd}>Esc</kbd> close
-              </span>
-            </div>
-
-            <div style={styles.actions}>
-              <button
-                onClick={submit}
-                disabled={!transcript.trim() || submitting}
-                style={{
-                  ...styles.primaryBtn,
-                  opacity: !transcript.trim() || submitting ? 0.5 : 1,
-                }}
-              >
-                <Send size={14} />
-                {submitting ? 'Scoring…' : 'Submit answer'}
-              </button>
-              <button
-                onClick={pass}
-                style={styles.secondaryBtn}
-                title="I already understand this"
-              >
-                <Check size={14} /> I get it
-              </button>
-              <button
-                onClick={next}
-                style={styles.ghostBtn}
-                title="Skip this question"
-              >
-                <SkipForward size={14} /> Skip
-              </button>
-            </div>
-          </section>
-        )}
-
-        {score && (
-          <ScoreFeedback
-            score={score}
-            onContinue={next}
-            onRetry={retry}
-            isLast={isLast}
+    <div className="vc-page">
+      <Orbs />
+      <div className="vc-container">
+        {!submitted ? (
+          <FormView
+            question={question}
+            trigger={trigger}
+            mode={mode}
+            setMode={setMode}
+            textAnswer={textAnswer}
+            setTextAnswer={setTextAnswer}
+            recState={recState}
+            setRecState={setRecState}
+            duration={duration}
+            setDuration={setDuration}
+            audioTranscript={audioTranscript}
+            setAudioTranscript={setAudioTranscript}
+            canSubmit={canSubmit}
+            onSubmit={submit}
+          />
+        ) : (
+          <SuccessView
+            question={question}
+            payload={submittedPayload}
+            onAnother={reset}
+            onCopy={copyAnswer}
+            copied={copied}
           />
         )}
-      </main>
+      </div>
+    </div>
+  );
+}
 
-      <footer style={styles.footer}>
-        <button
-          onClick={prev}
-          disabled={index === 0}
-          style={{ ...styles.navBtn, opacity: index === 0 ? 0.4 : 1 }}
-        >
-          <ChevronLeft size={14} /> Previous
-        </button>
-        <button onClick={() => setOverrideOpen(true)} style={styles.overrideBtn}>
-          <AlertTriangle size={14} /> Override
-        </button>
-        <button
-          onClick={next}
-          disabled={isLast && !score}
-          style={{ ...styles.navBtn, opacity: isLast && !score ? 0.4 : 1 }}
-        >
-          {isLast ? 'Finish' : 'Next'} <ChevronRight size={14} />
-        </button>
-      </footer>
-
-      {overrideOpen && (
-        <OverrideModal
-          onCancel={() => setOverrideOpen(false)}
-          onConfirm={override}
+function Orbs() {
+  const orbs = [
+    { top: '-8%', left: '-10%', size: 320, color: 'rgba(59,130,246,0.55)', delay: '0ms' },
+    { top: '18%', right: '-12%', size: 360, color: 'rgba(168,85,247,0.50)', delay: '100ms' },
+    { bottom: '8%', left: '8%', size: 300, color: 'rgba(139,92,246,0.50)', delay: '200ms' },
+    { top: '38%', left: '38%', size: 280, color: 'rgba(34,211,238,0.45)', delay: '150ms' },
+    { bottom: '-6%', right: '18%', size: 340, color: 'rgba(236,72,153,0.50)', delay: '300ms' },
+  ];
+  return (
+    <div className="vc-orbs" aria-hidden="true">
+      {orbs.map((o, i) => (
+        <div
+          key={i}
+          className="vc-orb"
+          style={{
+            top: o.top,
+            left: o.left,
+            right: o.right,
+            bottom: o.bottom,
+            width: o.size,
+            height: o.size,
+            background: `radial-gradient(circle, ${o.color}, transparent 65%)`,
+            animationDelay: o.delay,
+          }}
         />
-      )}
+      ))}
     </div>
   );
 }
 
-function Tab({ active, onClick, icon, label }) {
+function FormView({
+  question,
+  trigger,
+  mode,
+  setMode,
+  textAnswer,
+  setTextAnswer,
+  recState,
+  setRecState,
+  duration,
+  setDuration,
+  audioTranscript,
+  setAudioTranscript,
+  canSubmit,
+  onSubmit,
+}) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: '8px 14px',
-        background: active
-          ? 'var(--vscode-tab-activeBackground, rgba(255,255,255,0.04))'
-          : 'transparent',
-        color: active
-          ? 'var(--vscode-tab-activeForeground, #fff)'
-          : 'var(--vscode-tab-inactiveForeground, #aaa)',
-        borderTop: 'none',
-        borderLeft: 'none',
-        borderRight: 'none',
-        borderBottom: active
-          ? '2px solid var(--vscode-focusBorder, #007acc)'
-          : '2px solid transparent',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        fontSize: 13,
-      }}
-    >
-      {icon}
-      {label}
-    </button>
+    <>
+      <header className="vc-header">
+        <span className="vc-badge-pill vc-slide-up">
+          <Sparkles size={12} /> {triggerLabel(trigger)}
+        </span>
+        <h1 className="vc-heading vc-slide-up vc-delay-100">Comprehension Check</h1>
+        <p className="vc-subtitle vc-fade-in vc-delay-200">
+          Share your understanding of the code AI just wrote.
+        </p>
+      </header>
+
+      <div className="vc-card vc-slide-up vc-delay-200">
+        <section className="vc-section vc-question-section">
+          <div className="vc-question-row">
+            <div className="vc-question-icon">
+              <Brain size={22} />
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div className="vc-question-label">📝 Question</div>
+              <p className="vc-question-text">{question.question}</p>
+              {question.code_context && (
+                <p className="vc-question-context">📍 {question.code_context}</p>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="vc-section">
+          <label className="vc-method-label">How would you like to answer?</label>
+          <div className="vc-toggle-grid">
+            <button
+              className={`vc-toggle text${mode === 'text' ? ' active' : ''}`}
+              onClick={() => setMode('text')}
+              type="button"
+            >
+              <TypeIcon size={16} /> ✍️ Type Answer
+            </button>
+            <button
+              className={`vc-toggle audio${mode === 'audio' ? ' active' : ''}`}
+              onClick={() => setMode('audio')}
+              type="button"
+            >
+              <Mic size={16} /> 🎙️ Record Audio
+            </button>
+          </div>
+        </section>
+
+        <section className="vc-section">
+          {mode === 'text' ? (
+            <TextInput value={textAnswer} onChange={setTextAnswer} />
+          ) : (
+            <AudioRecorder
+              state={recState}
+              setState={setRecState}
+              duration={duration}
+              setDuration={setDuration}
+              transcript={audioTranscript}
+              setTranscript={setAudioTranscript}
+            />
+          )}
+        </section>
+
+        <section className="vc-section vc-submit-section">
+          <button className="vc-submit-btn" onClick={onSubmit} disabled={!canSubmit}>
+            🚀 Submit Answer <Send size={16} />
+          </button>
+        </section>
+      </div>
+    </>
   );
 }
 
-function EmptyState() {
+function TextInput({ value, onChange }) {
   return (
-    <div
-      style={{
-        ...styles.root,
-        alignItems: 'center',
-        justifyContent: 'center',
-        textAlign: 'center',
-      }}
-    >
-      <Sparkles size={32} style={{ opacity: 0.4 }} />
-      <h2 style={{ margin: '12px 0 4px' }}>No questions yet</h2>
-      <p style={{ opacity: 0.6, margin: 0 }}>
-        VibeCheck didn't find any unverified AI regions.
+    <>
+      <label className="vc-textarea-label">✨ Your Answer</label>
+      <textarea
+        className="vc-textarea"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Walk through what this code does, the trade-offs you see, and any concerns you'd flag in a review…"
+      />
+      <span className="vc-counter">{value.length} characters</span>
+    </>
+  );
+}
+
+function AudioRecorder({ state, setState, duration, setDuration, transcript, setTranscript }) {
+  const recognitionRef = useRef(null);
+  const timerRef = useRef(null);
+  const finalRef = useRef('');
+  const [interim, setInterim] = useState('');
+  const [error, setError] = useState('');
+
+  function getRecognition() {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) return null;
+    const r = new SR();
+    r.continuous = true;
+    r.interimResults = true;
+    r.lang = 'en-US';
+    return r;
+  }
+
+  async function start() {
+    setError('');
+
+    // Step 1: explicitly request mic permission via getUserMedia. Without this
+    // the SpeechRecognition API often fails immediately with `not-allowed` in
+    // VS Code's Electron webview because the permission prompt never fires.
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch (err) {
+      console.warn('[VibeCheck] getUserMedia failed', err);
+      const name = err && err.name;
+      if (name === 'NotAllowedError' || name === 'SecurityError') {
+        setError(
+          'Microphone permission denied. Open Windows Settings → Privacy & security → Microphone, allow desktop apps, then restart VS Code and try again.'
+        );
+      } else if (name === 'NotFoundError' || name === 'OverconstrainedError') {
+        setError('No microphone detected on this device.');
+      } else if (name === 'NotReadableError') {
+        setError('Mic is in use by another app. Close it and try again.');
+      } else {
+        setError('Could not access the microphone. Use text mode instead.');
+      }
+      return;
+    }
+
+    // We don't actually need to keep the stream open — SpeechRecognition will
+    // open its own. Stop the tracks immediately to release the indicator.
+    stream.getTracks().forEach((t) => t.stop());
+
+    // Step 2: start the speech recognition engine.
+    const recognition = getRecognition();
+    if (!recognition) {
+      setError(
+        'Speech recognition is not available in this environment. Please use text mode instead.'
+      );
+      return;
+    }
+
+    finalRef.current = '';
+    setTranscript('');
+    setInterim('');
+
+    recognition.onresult = (event) => {
+      let interimText = '';
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        const text = res[0].transcript;
+        if (res.isFinal) {
+          finalRef.current += (finalRef.current ? ' ' : '') + text.trim();
+        } else {
+          interimText += text;
+        }
+      }
+      setInterim(interimText);
+      setTranscript((finalRef.current + (interimText ? ' ' + interimText : '')).trim());
+    };
+
+    recognition.onerror = (e) => {
+      console.warn('[VibeCheck] speech recognition error', e);
+      if (e.error === 'not-allowed' || e.error === 'service-not-allowed') {
+        setError(
+          'Speech recognition was blocked. Restart VS Code and re-allow mic access when prompted.'
+        );
+      } else if (e.error === 'no-speech') {
+        // ignore — common when there's a silence gap
+        return;
+      } else if (e.error === 'audio-capture') {
+        setError('No microphone detected.');
+      } else if (e.error === 'network') {
+        setError(
+          'Speech recognition needs an internet connection (it routes through Google). Check your network.'
+        );
+      } else {
+        setError(`Speech recognition error: ${e.error}`);
+      }
+    };
+
+    recognition.onend = () => {
+      clearInterval(timerRef.current);
+      setInterim('');
+      setState((curr) => (curr === 'recording' ? 'complete' : curr));
+    };
+
+    try {
+      recognition.start();
+      recognitionRef.current = recognition;
+      setDuration(0);
+      setState('recording');
+      timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
+    } catch (err) {
+      console.warn('[VibeCheck] failed to start recognition', err);
+      setError('Could not start recording. Try again or switch to text mode.');
+    }
+  }
+
+  function stop() {
+    try {
+      recognitionRef.current?.stop();
+    } catch {}
+  }
+
+  function rerec() {
+    finalRef.current = '';
+    setTranscript('');
+    setInterim('');
+    setDuration(0);
+    setError('');
+    setState('ready');
+  }
+
+  useEffect(
+    () => () => {
+      clearInterval(timerRef.current);
+      try {
+        recognitionRef.current?.abort();
+      } catch {}
+    },
+    []
+  );
+
+  if (state === 'ready') {
+    return (
+      <div className="vc-rec-box vc-rec-ready vc-fade-in">
+        <div className="vc-rec-icon ready">
+          <Mic size={32} />
+        </div>
+        <h3 className="vc-rec-title">Ready to record</h3>
+        <p className="vc-rec-text">
+          Click Start and explain in your own words — words appear live as you speak.
+        </p>
+        {error && <p className="vc-rec-error">{error}</p>}
+        <div className="vc-rec-actions">
+          <button className="vc-glow-btn start" onClick={start} type="button">
+            <Mic size={16} /> Start recording
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (state === 'recording') {
+    const finalText = finalRef.current;
+    return (
+      <div className="vc-rec-box vc-rec-recording vc-fade-in">
+        <div className="vc-rec-dots">
+          <span className="vc-rec-dot" />
+          <span className="vc-rec-dot" />
+          <span className="vc-rec-dot" />
+        </div>
+        <div className="vc-timer">{formatTime(duration)}</div>
+        <p className="vc-rec-text" style={{ color: '#fecaca' }}>
+          🔴 Recording — speak clearly
+        </p>
+
+        <div className="vc-live-transcript">
+          {finalText || interim ? (
+            <p className="vc-live-text">
+              <span className="vc-live-final">{finalText}</span>
+              {interim && (
+                <span className="vc-live-interim">
+                  {finalText ? ' ' : ''}
+                  {interim}
+                </span>
+              )}
+            </p>
+          ) : (
+            <p className="vc-live-placeholder">Listening… start speaking now.</p>
+          )}
+        </div>
+
+        {error && <p className="vc-rec-error">{error}</p>}
+
+        <div className="vc-rec-actions">
+          <button className="vc-glow-btn stop" onClick={stop} type="button">
+            <Square size={14} fill="#fff" /> Stop
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // complete
+  return (
+    <div className="vc-rec-box vc-rec-complete vc-fade-in">
+      <div className="vc-rec-icon complete">
+        <Volume2 size={32} />
+      </div>
+      <h3 className="vc-rec-title">✅ Recording complete</h3>
+      <p className="vc-rec-text">
+        Length: {formatTime(duration)} · edit the transcript below if anything's off
       </p>
+
+      <textarea
+        className="vc-textarea vc-transcript-edit"
+        value={transcript}
+        onChange={(e) => {
+          finalRef.current = e.target.value;
+          setTranscript(e.target.value);
+        }}
+        placeholder="Your transcribed answer will appear here…"
+      />
+
+      {error && <p className="vc-rec-error">{error}</p>}
+
+      <div className="vc-rec-actions">
+        <button className="vc-glow-btn rerec" onClick={rerec} type="button">
+          <RefreshCcw size={14} /> Re-record
+        </button>
+      </div>
     </div>
   );
 }
 
-const styles = {
-  root: {
-    display: 'flex',
-    flexDirection: 'column',
-    minHeight: '100vh',
-    maxWidth: 760,
-    margin: '0 auto',
-    padding: '20px 24px 28px',
-    gap: 18,
-  },
-  header: {
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  headerLeft: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-  },
-  sessionId: {
-    fontSize: 12,
-    opacity: 0.5,
-    fontFamily: 'var(--vscode-editor-font-family, ui-monospace, monospace)',
-  },
-  iconBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    background: 'transparent',
-    border: '1px solid var(--vscode-widget-border, #444)',
-    color: 'var(--vscode-foreground, #ddd)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  main: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16,
-    flex: 1,
-  },
-  answerSection: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 12,
-    padding: 16,
-    border: '1px solid var(--vscode-widget-border, #333)',
-    borderRadius: 10,
-    background: 'var(--vscode-editorWidget-background, rgba(255,255,255,0.02))',
-  },
-  tabs: {
-    display: 'flex',
-    gap: 4,
-    borderBottom: '1px solid var(--vscode-widget-border, #333)',
-    marginBottom: 4,
-  },
-  textarea: {
-    width: '100%',
-    minHeight: 100,
-    padding: 12,
-    borderRadius: 8,
-    border: '1px solid var(--vscode-input-border, #555)',
-    background: 'var(--vscode-input-background, #1e1e1e)',
-    color: 'var(--vscode-input-foreground, #ddd)',
-    resize: 'vertical',
-    outline: 'none',
-    lineHeight: 1.5,
-  },
-  hintRow: { display: 'flex', justifyContent: 'flex-end' },
-  hint: {
-    fontSize: 11,
-    opacity: 0.55,
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 4,
-  },
-  kbd: {
-    fontFamily: 'var(--vscode-editor-font-family, ui-monospace, monospace)',
-    fontSize: 10,
-    padding: '1px 5px',
-    borderRadius: 4,
-    background: 'var(--vscode-keybindingLabel-background, #2a2a2a)',
-    border: '1px solid var(--vscode-keybindingLabel-border, #444)',
-    color: 'var(--vscode-keybindingLabel-foreground, #ddd)',
-    margin: '0 2px',
-  },
-  actions: {
-    display: 'flex',
-    gap: 8,
-    flexWrap: 'wrap',
-    marginTop: 4,
-  },
-  primaryBtn: {
-    padding: '10px 16px',
-    borderRadius: 8,
-    border: 'none',
-    background: 'var(--vscode-button-background, #0e639c)',
-    color: 'var(--vscode-button-foreground, #fff)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-    fontWeight: 500,
-  },
-  secondaryBtn: {
-    padding: '10px 14px',
-    borderRadius: 8,
-    border: '1px solid var(--vscode-button-border, #555)',
-    background: 'var(--vscode-button-secondaryBackground, transparent)',
-    color: 'var(--vscode-button-secondaryForeground, #ddd)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-  },
-  ghostBtn: {
-    padding: '10px 14px',
-    borderRadius: 8,
-    border: 'none',
-    background: 'transparent',
-    color: 'var(--vscode-descriptionForeground, #aaa)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 6,
-  },
-  footer: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingTop: 14,
-    borderTop: '1px solid var(--vscode-widget-border, #333)',
-  },
-  navBtn: {
-    padding: '8px 12px',
-    borderRadius: 6,
-    border: '1px solid var(--vscode-widget-border, #444)',
-    background: 'transparent',
-    color: 'var(--vscode-foreground, #ddd)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 4,
-  },
-  overrideBtn: {
-    padding: '8px 12px',
-    borderRadius: 6,
-    border: 'none',
-    background: 'transparent',
-    color: 'var(--vscode-errorForeground, #f48771)',
-    display: 'inline-flex',
-    alignItems: 'center',
-    gap: 4,
-  },
-};
+function SuccessView({ question, payload, onAnother, onCopy, copied }) {
+  return (
+    <div className="vc-success-card vc-slide-up">
+      <header className="vc-success-header">
+        <div className="vc-success-icon-circle">
+          <Check size={28} strokeWidth={3} />
+        </div>
+        <div>
+          <h2 className="vc-success-title">Answer submitted</h2>
+          <p className="vc-success-sub">
+            Nice work — VibeCheck logged your comprehension.
+          </p>
+        </div>
+      </header>
+
+      <div className="vc-review">
+        <div className="vc-review-block">
+          <div className="vc-review-label">Question</div>
+          <p className="vc-review-content">{question.question}</p>
+        </div>
+
+        <div className="vc-review-block">
+          <div className="vc-review-label">
+            {payload?.type === 'audio' ? '🎙️ Audio answer' : 'Your answer'}
+            {payload?.type === 'audio' && payload?.duration != null && (
+              <span style={{ marginLeft: 8, opacity: 0.7, fontWeight: 500 }}>
+                · {formatTime(payload.duration)}
+              </span>
+            )}
+          </div>
+          <p className="vc-review-content">{payload?.value}</p>
+          <button
+            className={`vc-copy-btn${copied ? ' copied' : ''}`}
+            onClick={onCopy}
+            type="button"
+          >
+            {copied ? <Check size={12} /> : <Copy size={12} />}
+            {copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
+      </div>
+
+      <div className="vc-success-action">
+        <button className="vc-another-btn" onClick={onAnother} type="button">
+          Answer another question <ArrowRight size={16} />
+        </button>
+      </div>
+    </div>
+  );
+}
