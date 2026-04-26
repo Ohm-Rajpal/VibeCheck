@@ -87,3 +87,8 @@ export interface ChangedFunction {
   startLine: number;
   endLine: number;
 }
+
+// Temporary probe to validate ts-morph cross-root reference resolution.
+export function sharedReferenceProbe(seed: string): string {
+  return `probe:${seed}`;
+}

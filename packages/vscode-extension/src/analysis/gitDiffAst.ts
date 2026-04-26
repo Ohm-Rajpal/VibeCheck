@@ -2,6 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 import * as ts from 'typescript';
+import {
+  Node as MorphNode,
+  Project,
+  ReferencedSymbol,
+  SyntaxKind,
+} from 'ts-morph';
 
 type LineRange = {
   start: number;
@@ -18,6 +24,7 @@ type ChangedFunction = {
   functionName: string;
   startLine: number;
   endLine: number;
+  callers?: string[];
 };
 
 type Question = {
@@ -25,15 +32,30 @@ type Question = {
   why: string;
 };
 
-const MAX_QUESTIONS = 4;
+const MAX_QUESTIONS = 10;
 
-export function generateQuestionsFromGitDiff(workspaceRoot: string): Question[] {
-  const files = parseChangedFiles(workspaceRoot); // Runs git diff --unified=0 --no-color
+export function generateQuestionsFromGitDiff(
+  workspaceRoot: string,
+  options?: { staged?: boolean }
+): Question[] {
+  const files = parseChangedFiles(workspaceRoot, options?.staged ?? false);
   const tsOrJsFiles = files.filter((file) => isTsOrJsFile(file.filePath));
   const pythonFiles = files.filter((file) => isPythonFile(file.filePath));
 
+  const tsOrJsChangedFunctions = tsOrJsFiles.flatMap((file) =>
+    analyzeTsOrJsFile(file, workspaceRoot)
+  );
+  const tsOrJsCallers = findTsOrJsCallersForFunctions(
+    workspaceRoot,
+    tsOrJsChangedFunctions
+  );
+  const enrichedTsOrJsChangedFunctions = tsOrJsChangedFunctions.map((fn) => ({
+    ...fn,
+    callers: tsOrJsCallers.get(changedFunctionKey(fn)) ?? [],
+  }));
+
   const changedFunctions = [
-    ...tsOrJsFiles.flatMap((file) => analyzeTsOrJsFile(file, workspaceRoot)),
+    ...enrichedTsOrJsChangedFunctions,
     ...analyzePythonFiles(pythonFiles, workspaceRoot),
   ];
 
@@ -48,13 +70,16 @@ export function generateQuestionsFromGitDiff(workspaceRoot: string): Question[] 
   }
 
   return changedFunctions.slice(0, MAX_QUESTIONS).map((fn) => ({
-    question: `You changed \`${fn.functionName}\` in \`${fn.filePath}\`. Which callers depend on it and what behavior changed?`,
+    question: `You changed \`${fn.functionName}\` in \`${fn.filePath}\`. Which callers depend on it and what behavior changed?${formatCallerSuffix(fn.callers)}`,
     why: `The changed lines intersect this function (lines ${fn.startLine}-${fn.endLine}).`,
   }));
 }
 
-function parseChangedFiles(workspaceRoot: string): ChangedFile[] {
-  const rawDiff = execFileSync('git', ['diff', '--unified=0', '--no-color'], {
+function parseChangedFiles(workspaceRoot: string, staged: boolean): ChangedFile[] {
+  const diffArgs = staged
+    ? ['diff', '--cached', '--unified=0', '--no-color']
+    : ['diff', '--unified=0', '--no-color'];
+  const rawDiff = execFileSync('git', diffArgs, {
     cwd: workspaceRoot,
     encoding: 'utf8',
   });
@@ -161,7 +186,8 @@ function toFunctionNode(node: ts.Node): { name: string } | undefined {
     if (ts.isVariableDeclaration(node.parent) && ts.isIdentifier(node.parent.name)) {
       return { name: node.parent.name.text };
     }
-    return { name: 'anonymous function expression' };
+    // Skip anonymous callbacks to keep checkpoints focused on named functions/methods.
+    return undefined;
   }
 
   return undefined;
@@ -284,6 +310,188 @@ function runPythonWorker(
       );
     }
   }
+}
+
+function findTsOrJsCallersForFunctions(
+  workspaceRoot: string,
+  changedFunctions: ChangedFunction[]
+): Map<string, string[]> {
+  if (changedFunctions.length === 0) {
+    return new Map();
+  }
+
+  const tsConfigPath = path.join(workspaceRoot, 'packages', 'vscode-extension', 'tsconfig.json');
+  if (!fs.existsSync(tsConfigPath)) {
+    return new Map();
+  }
+
+  const project = new Project({
+    tsConfigFilePath: tsConfigPath,
+    skipAddingFilesFromTsConfig: false,
+  });
+  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'shared', '**/*.ts')); // FLAG: What does this do? Does this only allow ts fiels to be analyzed?
+
+  const result = new Map<string, string[]>();
+  for (const changedFunction of changedFunctions) {
+    const key = changedFunctionKey(changedFunction);
+    const declarationNode = findChangedFunctionDeclaration(project, workspaceRoot, changedFunction);
+    if (!declarationNode) {
+      result.set(key, []);
+      continue;
+    }
+
+    const callers = findCallersForDeclaration(workspaceRoot, declarationNode);
+    result.set(key, callers);
+  }
+  return result;
+}
+
+function changedFunctionKey(changedFunction: ChangedFunction): string {
+  return `${changedFunction.filePath}:${changedFunction.functionName}:${changedFunction.startLine}:${changedFunction.endLine}`;
+}
+
+function findChangedFunctionDeclaration(
+  project: Project,
+  workspaceRoot: string,
+  changedFunction: ChangedFunction
+): MorphNode | undefined {
+  const absolutePath = path.join(workspaceRoot, changedFunction.filePath);
+  const sourceFile = project.getSourceFile(absolutePath);
+  if (!sourceFile) {
+    return undefined;
+  }
+
+  const candidates = sourceFile.getDescendants().filter((node) => {
+    if (!isSupportedFunctionNode(node)) {
+      return false;
+    }
+
+    const nodeName = getMorphFunctionName(node);
+    if (nodeName !== changedFunction.functionName) {
+      return false;
+    }
+
+    const startLine = node.getStartLineNumber();
+    const endLine = node.getEndLineNumber();
+    return (
+      startLine === changedFunction.startLine && endLine === changedFunction.endLine
+    );
+  });
+
+  return candidates[0];
+}
+
+function isSupportedFunctionNode(node: MorphNode): boolean {
+  return (
+    MorphNode.isFunctionDeclaration(node) ||
+    MorphNode.isMethodDeclaration(node) ||
+    MorphNode.isFunctionExpression(node) ||
+    MorphNode.isArrowFunction(node)
+  );
+}
+
+function getMorphFunctionName(node: MorphNode): string {
+  if (MorphNode.isFunctionDeclaration(node)) {
+    return node.getName() ?? 'anonymous function declaration';
+  }
+  if (MorphNode.isMethodDeclaration(node)) {
+    return node.getName();
+  }
+  if (MorphNode.isFunctionExpression(node) || MorphNode.isArrowFunction(node)) {
+    const variableDeclaration = node.getFirstAncestorByKind(
+      SyntaxKind.VariableDeclaration
+    );
+    if (variableDeclaration) {
+      return variableDeclaration.getName();
+    }
+    return 'anonymous function expression';
+  }
+  return 'anonymous function expression';
+}
+
+function findCallersForDeclaration(
+  workspaceRoot: string,
+  declarationNode: MorphNode
+): string[] {
+  const callers = new Set<string>();
+  const references = getReferencesForDeclaration(declarationNode);
+
+  for (const reference of references) {
+    for (const refEntry of reference.getReferences()) {
+      const refNode = refEntry.getNode();
+      if (!isCallLikeReference(refNode)) {
+        continue;
+      }
+
+      if (
+        refNode.getSourceFile().getFilePath() === declarationNode.getSourceFile().getFilePath() &&
+        refNode.getStartLineNumber() === declarationNode.getStartLineNumber()
+      ) {
+        continue;
+      }
+
+      const relativeFilePath = path
+        .relative(workspaceRoot, refNode.getSourceFile().getFilePath())
+        .replace(/\\/g, '/');
+      const enclosingName = findEnclosingFunctionName(refNode) ?? '<module>';
+      const label = `${enclosingName} (${relativeFilePath}:${refNode.getStartLineNumber()})`;
+      callers.add(label);
+    }
+  }
+
+  return Array.from(callers).sort();
+}
+
+function getReferencesForDeclaration(declarationNode: MorphNode): ReferencedSymbol[] {
+  if (MorphNode.isFunctionDeclaration(declarationNode)) {
+    const nameNode = declarationNode.getNameNode();
+    return nameNode ? nameNode.findReferences() : [];
+  }
+
+  if (MorphNode.isMethodDeclaration(declarationNode)) {
+    const nameNode = declarationNode.getNameNode();
+    return MorphNode.isIdentifier(nameNode) ? nameNode.findReferences() : [];
+  }
+
+  if (MorphNode.isFunctionExpression(declarationNode) || MorphNode.isArrowFunction(declarationNode)) {
+    const variableDeclaration = declarationNode.getFirstAncestorByKind(
+      SyntaxKind.VariableDeclaration
+    );
+    const nameNode = variableDeclaration?.getNameNode();
+    return nameNode && MorphNode.isIdentifier(nameNode) ? nameNode.findReferences() : [];
+  }
+
+  return [];
+}
+
+function isCallLikeReference(node: MorphNode): boolean {
+  const parent = node.getParent();
+  if (!parent) {
+    return false;
+  }
+  if (MorphNode.isCallExpression(parent) && parent.getExpression() === node) {
+    return true;
+  }
+  if (MorphNode.isPropertyAccessExpression(parent)) {
+    const callParent = parent.getParent();
+    return MorphNode.isCallExpression(callParent) && callParent.getExpression() === parent;
+  }
+  return false;
+}
+
+function findEnclosingFunctionName(node: MorphNode): string | undefined {
+  const enclosing = node.getFirstAncestor((ancestor) => isSupportedFunctionNode(ancestor));
+  if (!enclosing) {
+    return undefined;
+  }
+  return getMorphFunctionName(enclosing);
+}
+
+function formatCallerSuffix(callers: string[] | undefined): string {
+  if (!callers || callers.length === 0) {
+    return '';
+  }
+  return ` Callers found: ${callers.slice(0, 6).join(', ')}.`;
 }
 
 function intersects(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {

@@ -10,10 +10,9 @@ import { generateQuestionsFromGitDiff } from './analysis/gitDiffAst';
 const CHECKPOINT_PORT = Number(process.env.CHECKPOINT_PORT ?? 3456);
 
 export function activate(context: vscode.ExtensionContext) {
-  console.log('[VibeCheck] activate() called');
-
   // 1. Local HTTP server: receives notifications from pre-commit hook + Devin webhook.
   const server = http.createServer((req, res) => {
+    console.log('[VibeCheck] server request', req.method, req.url);
     if (req.method === 'POST' && req.url === '/checkpoint') {
       let body = '';
       req.on('data', (chunk) => (body += chunk));

@@ -16,3 +16,26 @@ AI agents generate code faster than humans can understand it. Code passes CI, lo
 ## Status
 
 Skeleton + working Layer 1 detection. See `packages/vscode-extension/src/detection/` for the multi-signal logic. Open the `VibeCheck` Output Channel in the Extension Dev Host to watch detection decisions in real time.
+
+## Pre-commit Setup and Test
+
+1. Install the local git hook:
+   - `cd packages/hooks`
+   - `npm run install-local-hook`
+2. Build the VSCode extension:
+   - `cd ../vscode-extension`
+   - `npm run compile`
+3. Launch the Extension Development Host and keep it running.
+4. Make and stage a code change in any supported file (`.js`, `.ts`, `.py`):
+   - `git add <file>`
+5. Run a commit:
+   - `git commit -m "test vibecheck gate"`
+6. Expected behavior:
+   - Commit pauses in pre-commit.
+   - VibeCheck checkpoint panel opens with AST questions from staged diff.
+   - Clicking `Mark Pass` lets commit continue.
+   - Clicking `Mark Fail` aborts commit.
+
+Troubleshooting:
+- If commit aborts immediately with "Could not reach extension", make sure the Extension Dev Host is running.
+- If no questions appear, verify your change is staged (`git diff --cached`) and inside supported source files.

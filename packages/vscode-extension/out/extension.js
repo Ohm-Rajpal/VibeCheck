@@ -45,10 +45,9 @@ const sidebar_1 = require("./growth/sidebar");
 const gitDiffAst_1 = require("./analysis/gitDiffAst");
 const CHECKPOINT_PORT = Number(process.env.CHECKPOINT_PORT ?? 3456);
 function activate(context) {
-    console.log('[VibeCheck] activate() called');
-    console.log('[VibeCheck] activate() called');
     // 1. Local HTTP server: receives notifications from pre-commit hook + Devin webhook.
     const server = http.createServer((req, res) => {
+        console.log('[VibeCheck] server request', req.method, req.url);
         if (req.method === 'POST' && req.url === '/checkpoint') {
             let body = '';
             req.on('data', (chunk) => (body += chunk));
@@ -128,7 +127,6 @@ function activate(context) {
         const pos = editor.selection.active;
         await editor.edit((builder) => builder.insert(pos, sample));
     }), vscode.commands.registerCommand('vibecheck.openCheckpoint', () => {
-
         const regions = regionTracker_1.regionTracker.getUnverified();
         const questions = regions.map((r) => ({
             question: `Walk me through ${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}.`,
@@ -137,7 +135,7 @@ function activate(context) {
             file: r.file.split('/').pop() ?? r.file,
         }));
         (0, panel_1.openCheckpointPanel)(context, `manual-${Date.now()}`, questions.length ? questions : [], 'pre_commit');
-
+        (0, panel_1.openCheckpointPanel)(context, 'manual', [], 'pre_commit');
     }), vscode.commands.registerCommand('vibecheck.analyzeGitDiff', () => {
         const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!workspaceRoot) {

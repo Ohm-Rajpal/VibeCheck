@@ -6,7 +6,8 @@
     "vibecheck-pre-commit": "./pre-commit.js"
   },
   "scripts": {
-    "install-hook": "husky install && husky add .husky/pre-commit 'node packages/hooks/pre-commit.js'"
+    "install-hook": "husky install && husky add .husky/pre-commit 'node packages/hooks/pre-commit.js'",
+    "install-local-hook": "node ./install-local-hook.js"
   },
   "devDependencies": {
     "husky": "^9.1.0"
