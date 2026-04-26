@@ -18,13 +18,72 @@
       },
       {
         "command": "vibecheck.openCheckpoint",
-        "title": "VibeCheck: Open Checkpoint Panel"
+        "title": "VibeCheck: Open Checkpoint"
       },
       {
         "command": "vibecheck.simulateAIBurst",
         "title": "VibeCheck: Simulate AI Burst (test detection)"
+      },
+      {
+        "command": "vibecheck.submitAnswer",
+        "title": "Submit answer",
+        "enablement": "!commentIsEmpty"
+      },
+      {
+        "command": "vibecheck.overrideThread",
+        "title": "Override"
+      },
+      {
+        "command": "vibecheck.skipThread",
+        "title": "Skip"
+      },
+      {
+        "command": "vibecheck.dismissThread",
+        "title": "Dismiss"
       }
     ],
+    "menus": {
+      "comments/commentThread/context": [
+        {
+          "command": "vibecheck.submitAnswer",
+          "group": "inline@1",
+          "when": "commentController == vibecheck && commentThread == vibecheck-unresolved"
+        },
+        {
+          "command": "vibecheck.skipThread",
+          "group": "inline@2",
+          "when": "commentController == vibecheck && commentThread == vibecheck-unresolved"
+        },
+        {
+          "command": "vibecheck.overrideThread",
+          "group": "inline@3",
+          "when": "commentController == vibecheck && commentThread == vibecheck-unresolved"
+        },
+        {
+          "command": "vibecheck.dismissThread",
+          "group": "inline@1",
+          "when": "commentController == vibecheck && commentThread == vibecheck-resolved"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "vibecheck.submitAnswer",
+          "when": "false"
+        },
+        {
+          "command": "vibecheck.overrideThread",
+          "when": "false"
+        },
+        {
+          "command": "vibecheck.skipThread",
+          "when": "false"
+        },
+        {
+          "command": "vibecheck.dismissThread",
+          "when": "false"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {
@@ -42,6 +101,22 @@
           "type": "webview"
         }
       ]
+    },
+    "configuration": {
+      "title": "VibeCheck",
+      "properties": {
+        "vibecheck.checkpointUi": {
+          "type": "string",
+          "enum": ["comments", "native", "webview"],
+          "default": "comments",
+          "enumDescriptions": [
+            "Inline GitHub-PR-style comment threads anchored to the AI region (recommended).",
+            "Sequence of VSCode info dialogs + InputBox. Bulletproof but ugly.",
+            "Rich HTML webview panel. Prettiest but flaky on some VSCode Remote setups."
+          ],
+          "description": "How comprehension checkpoints are presented when an AI burst is detected."
+        }
+      }
     }
   },
   "repository": {

@@ -3,28 +3,36 @@ import * as http from 'http';
 import { activateVelocityDetector, resetDetectorForTest } from './detection/velocityDetector';
 import { activateDecorator } from './detection/decorator';
 import { regionTracker } from './detection/regionTracker';
-import { openCheckpointPanel } from './checkpoint/panel';
+import { launchCheckpointForFirstUnverified } from './checkpoint/launcher';
+import { activateCommentThreads } from './checkpoint/commentThreads';
 import { activateGrowthSidebar } from './growth/sidebar';
+import { onSummaryChange, VibeSummary } from './metrics/recorder';
+import { activateVibeBar } from './status/vibeBar';
 
 const CHECKPOINT_PORT = Number(process.env.CHECKPOINT_PORT ?? 3456);
 
 export function activate(context: vscode.ExtensionContext) {
   console.log('[VibeCheck] activate() called');
+  console.log('[VibeCheck] extensionPath:', context.extensionPath);
+  console.log('[VibeCheck] compiled __dirname:', __dirname);
 
   // 1. Local HTTP server: receives notifications from pre-commit hook + Devin webhook.
+  // The hook just pings us with a trigger; we then open a checkpoint for the
+  // first unverified region in the workspace. Region picking + question
+  // generation is owned by the launcher so the HTTP path stays a thin shim.
   const server = http.createServer((req, res) => {
     if (req.method === 'POST' && req.url === '/checkpoint') {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
-      req.on('end', () => {
+      req.on('end', async () => {
         try {
-          const { session_id, questions, trigger } = JSON.parse(body);
-          openCheckpointPanel(context, session_id, questions, trigger);
+          const { trigger } = JSON.parse(body || '{}');
+          await launchCheckpointForFirstUnverified(context, trigger || 'pre_commit');
           res.writeHead(200);
           res.end('ok');
-        } catch {
+        } catch (err) {
           res.writeHead(400);
-          res.end('bad payload');
+          res.end(`bad payload: ${err instanceof Error ? err.message : err}`);
         }
       });
       return;
@@ -35,7 +43,11 @@ export function activate(context: vscode.ExtensionContext) {
   server.listen(CHECKPOINT_PORT);
   context.subscriptions.push({ dispose: () => server.close() });
 
-  // 2. Layer 1 — velocity detector + visual decorator.
+  // 2. Layer 1 — velocity detector + visual decorator + inline comment
+  // threads. The comment controller MUST activate before the velocity
+  // detector creates regions, since the launcher will try to attach
+  // threads to those regions immediately.
+  activateCommentThreads(context);
   activateVelocityDetector(context);
   activateDecorator(context);
 
@@ -47,15 +59,22 @@ export function activate(context: vscode.ExtensionContext) {
   statusBar.command = 'vibecheck.openCheckpoint';
   context.subscriptions.push(
     statusBar,
-    regionTracker.onChange(() => updateStatusBar(statusBar))
+    regionTracker.onChange(() => updateStatusBar(statusBar, context.extensionPath)),
+    onSummaryChange((summary) => {
+      currentSummary = summary;
+      updateStatusBar(statusBar, context.extensionPath);
+    })
   );
-  updateStatusBar(statusBar);
+  updateStatusBar(statusBar, context.extensionPath);
   statusBar.show();
 
-  // 4. Growth dashboard sidebar.
+  // 4. Vibing / Learning gauge — two bars in the bottom-right status area.
+  activateVibeBar(context);
+
+  // 5. Growth dashboard sidebar.
   activateGrowthSidebar(context);
 
-  // 5. Commands.
+  // 6. Commands.
   context.subscriptions.push(
     vscode.commands.registerCommand('vibecheck.showGrowth', () => {
       vscode.commands.executeCommand('workbench.view.extension.vibecheck');
@@ -105,35 +124,49 @@ export function activate(context: vscode.ExtensionContext) {
       const pos = editor.selection.active;
       await editor.edit((builder) => builder.insert(pos, sample));
     }),
-    vscode.commands.registerCommand('vibecheck.openCheckpoint', () => {
-      const regions = regionTracker.getUnverified();
-      const questions = regions.map((r) => ({
-        question: `Walk me through ${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}.`,
-        concept_tag: 'general comprehension',
-        code_context: `${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}`,
-        file: r.file.split('/').pop() ?? r.file,
-      }));
-      openCheckpointPanel(
-        context,
-        `manual-${Date.now()}`,
-        questions.length ? questions : [],
-        'pre_commit'
-      );
+    vscode.commands.registerCommand('vibecheck.openCheckpoint', async () => {
+      try {
+        await launchCheckpointForFirstUnverified(context, 'manual');
+      } catch (err) {
+        vscode.window.showErrorMessage(
+          `VibeCheck: ${err instanceof Error ? err.message : err}`
+        );
+      }
     })
   );
 }
 
-function updateStatusBar(item: vscode.StatusBarItem) {
+function updateStatusBar(item: vscode.StatusBarItem, extensionPath: string) {
   const { unverified, files } = regionTracker.stats();
+  const metrics = latestMetricText();
   if (unverified === 0) {
-    item.text = '$(pulse) VibeCheck: clean';
-    item.tooltip = 'No unverified AI regions.';
+    item.text = `$(pulse) VibeCheck: clean · ${metrics}`;
+    item.tooltip = new vscode.MarkdownString(
+      `No unverified AI regions.\n\n` +
+        `**Metrics:** ${metrics}\n\n` +
+        `**Loaded extension path:**\n\n\`${extensionPath}\`\n\n` +
+        `If you do not see 🔥/🧠 in this status item, the Extension Host is loading stale code.`
+    );
     item.backgroundColor = undefined;
   } else {
-    item.text = `$(pulse) ${unverified} unverified · ${files} file${files === 1 ? '' : 's'}`;
-    item.tooltip = 'Click to open checkpoint panel for unverified AI regions.';
+    item.text = `$(pulse) ${unverified} unverified · ${metrics}`;
+    item.tooltip = new vscode.MarkdownString(
+      `Click to open checkpoint panel for ${unverified} unverified AI region${unverified === 1 ? '' : 's'} across ${files} file${files === 1 ? '' : 's'}.\n\n` +
+        `**Metrics:** ${metrics}\n\n` +
+        `**Loaded extension path:**\n\n\`${extensionPath}\``
+    );
     item.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
   }
 }
+
+function latestMetricText(): string {
+  const summary = currentSummary;
+  if (!summary || summary.generated === 0) {
+    return '🔥– 🧠–';
+  }
+  return `🔥${summary.vibing_pct}% 🧠${summary.learning_pct}%`;
+}
+
+let currentSummary: VibeSummary | undefined;
 
 export function deactivate() {}

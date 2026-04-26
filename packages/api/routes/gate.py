@@ -2,6 +2,8 @@
 from fastapi import APIRouter, File, Response, UploadFile
 
 from ..schemas.gate import (
+    GeneratedQuestion,
+    QuestionRequest,
     SpeakRequest,
     TranscribeResponse,
     VerifyRequest,
@@ -9,11 +11,22 @@ from ..schemas.gate import (
 )
 from ..services.checkpoints import (
     evaluate_transcript,
+    generate_question,
     lookup_question,
 )
 from ..services.elevenlabs import synthesize_speech, transcribe_audio
 
 router = APIRouter()
+
+
+@router.post("/question", response_model=GeneratedQuestion)
+async def question(req: QuestionRequest) -> GeneratedQuestion:
+    """Generate ONE design-choice comprehension question for a freshly-detected
+    AI-authored code region. The returned `checkpoint_id` is what the client
+    must echo back on `/gate/verify` so the server can grade against the same
+    code+question pair.
+    """
+    return await generate_question(req)
 
 
 @router.post("/verify", response_model=VerifyResponse)

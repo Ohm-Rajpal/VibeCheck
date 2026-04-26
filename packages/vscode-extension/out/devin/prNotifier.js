@@ -35,10 +35,13 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.handleDevinPRNotification = handleDevinPRNotification;
 const vscode = __importStar(require("vscode"));
-const panel_1 = require("../checkpoint/panel");
+const launcher_1 = require("../checkpoint/launcher");
 // Called by the local HTTP server when the backend forwards a Devin PR webhook.
-function handleDevinPRNotification(context, payload) {
+// For now this just surfaces a toast and opens the next unverified region — the
+// PR-specific question payload will be wired in once Layer 2B (PR-time
+// classifier) is implemented.
+async function handleDevinPRNotification(context, payload) {
     vscode.window.showInformationMessage(`🤖 Devin opened a PR: ${payload.pr_url}. Review required.`);
-    (0, panel_1.openCheckpointPanel)(context, payload.session_id, payload.questions, 'devin_pr');
+    await (0, launcher_1.launchCheckpointForFirstUnverified)(context, 'devin_pr');
 }
 //# sourceMappingURL=prNotifier.js.map

@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
-import { openCheckpointPanel } from '../checkpoint/panel';
+import { launchCheckpointForRegion } from '../checkpoint/launcher';
+import { recordEvent } from '../metrics/recorder';
 import { looksLikePaste, refreshClipboardSnapshot } from './clipboard';
 import { regionTracker, AIRegion } from './regionTracker';
 
@@ -160,6 +161,18 @@ export function activateVelocityDetector(context: vscode.ExtensionContext) {
     regionTracker.addBurst(regions);
     log(`burst start id=${burstId} regions=${regions.length}`);
 
+    // Telemetry: each burst is ONE ai_generated event regardless of how
+    // many regions it spawned, so the gauge tracks user-visible "the AI
+    // just wrote something" moments rather than internal region splits.
+    if (regions.length > 0) {
+      void recordEvent('ai_generated', {
+        burst_id: burstId,
+        region_count: regions.length,
+        lines_added: totalLinesAdded,
+        file: shortName(event.document.fileName),
+      });
+    }
+
     maybeToast(context, event.document, totalLinesAdded);
   });
 
@@ -234,39 +247,38 @@ async function maybeToast(
   );
 
   if (choice === 'Answer Now') {
-    log('user clicked Answer Now → opening panel');
+    log('user clicked Answer Now → fetching question + opening panel');
     const regions = burst ? regionTracker.getByBurst(burst.burstId) : [];
-    const questions = regions.map((r) => regionToQuestion(r));
-    openCheckpointPanel(
-      context,
-      burst?.burstId ?? `local-${now}`,
-      questions.length ? questions : [fallbackQuestion(doc)],
-      'velocity'
-    );
+    // We currently surface ONE region per checkpoint (the largest one in the
+    // burst) — that keeps the demo focused on a single design question.
+    // Multi-region sweeps can come later once the single-region UX is solid.
+    const target =
+      regions.sort((a, b) => b.endLine - b.startLine - (a.endLine - a.startLine))[0];
+    if (target) {
+      try {
+        await launchCheckpointForRegion(context, target, 'velocity', burst!.burstId);
+      } catch (err) {
+        log(`launchCheckpointForRegion failed: ${err}`);
+        vscode.window.showErrorMessage(
+          `VibeCheck: could not open checkpoint — ${err instanceof Error ? err.message : err}`
+        );
+      }
+    } else {
+      log('no region found for burst — nothing to check');
+    }
   } else if (choice === 'Skip') {
     log('user skipped checkpoint');
+    void recordEvent('checkpoint_dismissed', {
+      source: 'toast_skip',
+      burst_id: burst?.burstId,
+    });
   } else {
     log('toast dismissed without action (auto-timeout)');
+    void recordEvent('checkpoint_dismissed', {
+      source: 'toast_timeout',
+      burst_id: burst?.burstId,
+    });
   }
-}
-
-function regionToQuestion(r: AIRegion) {
-  const file = shortName(r.file);
-  return {
-    question: `Walk me through what the AI-generated code in ${file}:${r.startLine + 1}-${r.endLine + 1} does, and why this approach over alternatives.`,
-    concept_tag: 'general comprehension',
-    code_context: `${file}:${r.startLine + 1}-${r.endLine + 1}`,
-    file,
-  };
-}
-
-function fallbackQuestion(doc: vscode.TextDocument) {
-  return {
-    question: `Walk me through what was just generated in ${shortName(doc.fileName)}.`,
-    concept_tag: 'general comprehension',
-    code_context: shortName(doc.fileName),
-    file: shortName(doc.fileName),
-  };
 }
 
 function shortName(filePath: string): string {

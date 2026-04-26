@@ -15,6 +15,21 @@ class GeneratedQuestion(BaseModel):
     diff_excerpt: str
 
 
+class QuestionRequest(BaseModel):
+    """Asks the model to generate ONE design-choice question for a freshly-detected
+    AI-authored region. The extension sends the actual region text so the question
+    can be hyper-specific to what was generated.
+    """
+
+    session_id: str = "mock-session"
+    checkpoint_id: str = ""  # extension may pre-assign; otherwise server fills
+    code: str
+    file: str = "unknown"
+    language: Optional[str] = None  # e.g., "typescript", "python"
+    start_line: int = 0
+    end_line: int = 0
+
+
 class VerifyRequest(BaseModel):
     session_id: str = "mock-session"
     checkpoint_id: str = "mock-checkpoint"

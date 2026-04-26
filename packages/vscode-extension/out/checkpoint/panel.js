@@ -37,8 +37,12 @@ exports.openCheckpointPanel = openCheckpointPanel;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const regionTracker_1 = require("../detection/regionTracker");
+const recorder_1 = require("../metrics/recorder");
+const BACKEND_URL = process.env.VIBECHECK_BACKEND_URL ?? 'http://localhost:8000';
 let currentPanel;
-function openCheckpointPanel(context, sessionId, questions, trigger) {
+let currentPayload;
+async function openCheckpointPanel(context, payload) {
     if (currentPanel) {
         currentPanel.reveal(vscode.ViewColumn.Beside);
     }
@@ -46,70 +50,132 @@ function openCheckpointPanel(context, sessionId, questions, trigger) {
         currentPanel = vscode.window.createWebviewPanel('vibecheckCheckpoint', 'VibeCheck — Comprehension Check', vscode.ViewColumn.Beside, { enableScripts: true, retainContextWhenHidden: true });
         currentPanel.onDidDispose(() => {
             currentPanel = undefined;
+            currentPayload = undefined;
         });
-        currentPanel.webview.onDidReceiveMessage((msg) => {
-            handleMessage(msg);
+        currentPanel.webview.onDidReceiveMessage(async (msg) => {
+            const panel = currentPanel;
+            const payload = currentPayload;
+            if (!panel || !payload)
+                return;
+            try {
+                await handleMessage(panel, payload, msg);
+            }
+            catch (err) {
+                const reply = {
+                    type: 'SCORE',
+                    checkpointId: payload.regionId,
+                    score: {
+                        passed: false,
+                        value: 0,
+                        feedback: err instanceof Error ? err.message : String(err),
+                    },
+                };
+                panel.webview.postMessage(reply);
+            }
         });
     }
-    currentPanel.webview.html = renderHtml(context, sessionId, questions, trigger);
+    currentPayload = payload;
+    currentPanel.title = `VibeCheck — ${payload.fileShort}:${payload.startLine + 1}-${payload.endLine + 1}`;
+    currentPanel.webview.html = renderHtml(context, payload);
     return currentPanel;
 }
-function handleMessage(msg) {
+async function handleMessage(panel, payload, msg) {
     switch (msg.type) {
         case 'PASS':
+            regionTracker_1.regionTracker.markStatus([payload.regionId], 'passed');
             vscode.window.showInformationMessage(`✅ VibeCheck: marked ${msg.checkpointId} as understood.`);
-            // TODO: mark related AIRegion(s) as verified in regionTracker.
             break;
         case 'OVERRIDE':
+            regionTracker_1.regionTracker.markStatus([payload.regionId], 'overridden');
+            void (0, recorder_1.recordEvent)('checkpoint_overridden', {
+                region_id: payload.regionId,
+                source: 'webview_override',
+                reason: msg.reason,
+            });
             vscode.window.showWarningMessage(`⚠️ VibeCheck overridden: ${msg.reason}`);
-            // TODO: log override to growth dashboard.
+            panel.dispose();
             break;
-        case 'SUBMIT_TRANSCRIPT': {
-            // TODO: forward to scoring backend (e.g. POST /score). Mocked for now.
-            const score = mockScore(msg.transcript);
-            const reply = {
-                type: 'SCORE',
-                checkpointId: msg.checkpointId,
-                score,
-            };
-            // Small delay so the "Scoring…" state is visible.
-            setTimeout(() => currentPanel?.webview.postMessage(reply), 700);
+        case 'SUBMIT_TRANSCRIPT':
+            await handleSubmit(panel, payload, msg.checkpointId, msg.transcript);
             break;
-        }
         case 'CLOSE':
             currentPanel?.dispose();
             break;
     }
 }
-// Deterministic mock scorer: short answers fail, longer ones pass.
-// Replace with a real call to the backend scoring endpoint.
-function mockScore(transcript) {
-    const words = transcript.trim().split(/\s+/).filter(Boolean).length;
-    if (words < 8) {
-        return {
-            passed: false,
-            value: Math.min(0.55, words / 16),
-            feedback: 'Your explanation is too short to verify comprehension. Try walking through the data flow step by step.',
+async function handleSubmit(panel, payload, checkpointId, transcript) {
+    const text = transcript.trim();
+    if (!text) {
+        const reply = {
+            type: 'SCORE',
+            checkpointId,
+            score: {
+                passed: false,
+                value: 0,
+                feedback: 'Type a few sentences explaining the design choice.',
+            },
         };
+        panel.webview.postMessage(reply);
+        return;
     }
-    const value = Math.min(0.95, 0.6 + words / 80);
-    return {
-        passed: true,
-        value,
-        feedback: 'Good explanation — the key concepts are covered. The region will be marked verified.',
+    void (0, recorder_1.recordEvent)('answer_submitted', {
+        region_id: payload.regionId,
+        source: 'webview',
+        char_count: text.length,
+    });
+    const res = await fetch(`${BACKEND_URL}/gate/verify`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            session_id: payload.sessionId,
+            checkpoint_id: payload.regionId,
+            transcript: text,
+            file: payload.fileShort,
+            diff_excerpt: payload.code,
+        }),
+    });
+    if (!res.ok) {
+        throw new Error(`verify failed (${res.status}): ${await res.text()}`);
+    }
+    const json = (await res.json());
+    const reply = {
+        type: 'SCORE',
+        checkpointId,
+        score: json.score,
     };
+    panel.webview.postMessage(reply);
+    if (json.score.passed) {
+        regionTracker_1.regionTracker.markStatus([payload.regionId], 'passed');
+        void (0, recorder_1.recordEvent)('answer_passed', {
+            region_id: payload.regionId,
+            source: 'webview',
+            overall: json.score.overall,
+        });
+    }
 }
-function renderHtml(context, sessionId, questions, trigger) {
+function renderHtml(context, payload) {
     const distPath = path.join(context.extensionPath, 'webview', 'dist', 'index.html');
     let html;
     try {
         html = fs.readFileSync(distPath, 'utf8');
     }
     catch {
-        return fallbackHtml(sessionId, questions, trigger);
+        return fallbackHtml(payload);
     }
-    // Encode the init payload safely for inline JSON in HTML.
-    const initJson = JSON.stringify({ sessionId, questions, trigger })
+    const questions = [
+        {
+            question: payload.question,
+            concept_tag: payload.conceptTag,
+            code_context: `${payload.fileShort}:${payload.startLine + 1}-${payload.endLine + 1}`,
+            file: payload.fileShort,
+            checkpoint_id: payload.regionId,
+        },
+    ];
+    const initJson = JSON.stringify({
+        sessionId: payload.sessionId,
+        questions,
+        trigger: payload.trigger,
+    })
         .replace(/</g, '\\u003c')
         .replace(/>/g, '\\u003e')
         .replace(/&/g, '\\u0026');
@@ -124,12 +190,15 @@ function renderHtml(context, sessionId, questions, trigger) {
     // Fallback: prepend if no <head> tag.
     return inject + html;
 }
-function fallbackHtml(sessionId, questions, trigger) {
+function fallbackHtml(payload) {
+    const location = `${payload.fileShort}:${payload.startLine + 1}-${payload.endLine + 1}`;
     return `<!doctype html>
 <html><body style="font-family:system-ui;padding:24px;color:#eee;background:#1e1e1e">
-  <h2>🧠 VibeCheck — ${trigger}</h2>
-  <p>Session: <code>${sessionId}</code></p>
-  <pre>${escapeHtml(JSON.stringify(questions, null, 2))}</pre>
+  <h2>🧠 VibeCheck — ${escapeHtml(payload.trigger)}</h2>
+  <p>Session: <code>${escapeHtml(payload.sessionId)}</code></p>
+  <p><strong>${escapeHtml(location)}</strong></p>
+  <p>${escapeHtml(payload.question)}</p>
+  <pre>${escapeHtml(payload.code)}</pre>
   <p><i>Webview bundle not built. Run <code>npm run build:webview</code> from the repo root.</i></p>
 </body></html>`;
 }

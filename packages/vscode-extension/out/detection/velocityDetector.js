@@ -36,7 +36,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.activateVelocityDetector = activateVelocityDetector;
 exports.resetDetectorForTest = resetDetectorForTest;
 const vscode = __importStar(require("vscode"));
-const panel_1 = require("../checkpoint/panel");
+const launcher_1 = require("../checkpoint/launcher");
+const recorder_1 = require("../metrics/recorder");
 const clipboard_1 = require("./clipboard");
 const regionTracker_1 = require("./regionTracker");
 // ── Tunable thresholds ─────────────────────────────────────
@@ -157,6 +158,17 @@ function activateVelocityDetector(context) {
         };
         regionTracker_1.regionTracker.addBurst(regions);
         log(`burst start id=${burstId} regions=${regions.length}`);
+        // Telemetry: each burst is ONE ai_generated event regardless of how
+        // many regions it spawned, so the gauge tracks user-visible "the AI
+        // just wrote something" moments rather than internal region splits.
+        if (regions.length > 0) {
+            void (0, recorder_1.recordEvent)('ai_generated', {
+                burst_id: burstId,
+                region_count: regions.length,
+                lines_added: totalLinesAdded,
+                file: shortName(event.document.fileName),
+            });
+        }
         maybeToast(context, event.document, totalLinesAdded);
     });
     context.subscriptions.push(sub);
@@ -218,34 +230,39 @@ async function maybeToast(context, doc, linesAdded) {
     log(`toast SHOWN (~${linesAdded} lines in ${filePart})`);
     const choice = await vscode.window.showInformationMessage(`🧠 VibeCheck: AI just wrote ~${linesAdded} lines in ${filePart}. Quick check?`, 'Answer Now', 'Skip');
     if (choice === 'Answer Now') {
-        log('user clicked Answer Now → opening panel');
+        log('user clicked Answer Now → fetching question + opening panel');
         const regions = burst ? regionTracker_1.regionTracker.getByBurst(burst.burstId) : [];
-        const questions = regions.map((r) => regionToQuestion(r));
-        (0, panel_1.openCheckpointPanel)(context, burst?.burstId ?? `local-${now}`, questions.length ? questions : [fallbackQuestion(doc)], 'velocity');
+        // We currently surface ONE region per checkpoint (the largest one in the
+        // burst) — that keeps the demo focused on a single design question.
+        // Multi-region sweeps can come later once the single-region UX is solid.
+        const target = regions.sort((a, b) => b.endLine - b.startLine - (a.endLine - a.startLine))[0];
+        if (target) {
+            try {
+                await (0, launcher_1.launchCheckpointForRegion)(context, target, 'velocity', burst.burstId);
+            }
+            catch (err) {
+                log(`launchCheckpointForRegion failed: ${err}`);
+                vscode.window.showErrorMessage(`VibeCheck: could not open checkpoint — ${err instanceof Error ? err.message : err}`);
+            }
+        }
+        else {
+            log('no region found for burst — nothing to check');
+        }
     }
     else if (choice === 'Skip') {
         log('user skipped checkpoint');
+        void (0, recorder_1.recordEvent)('checkpoint_dismissed', {
+            source: 'toast_skip',
+            burst_id: burst?.burstId,
+        });
     }
     else {
         log('toast dismissed without action (auto-timeout)');
+        void (0, recorder_1.recordEvent)('checkpoint_dismissed', {
+            source: 'toast_timeout',
+            burst_id: burst?.burstId,
+        });
     }
-}
-function regionToQuestion(r) {
-    const file = shortName(r.file);
-    return {
-        question: `Walk me through what the AI-generated code in ${file}:${r.startLine + 1}-${r.endLine + 1} does, and why this approach over alternatives.`,
-        concept_tag: 'general comprehension',
-        code_context: `${file}:${r.startLine + 1}-${r.endLine + 1}`,
-        file,
-    };
-}
-function fallbackQuestion(doc) {
-    return {
-        question: `Walk me through what was just generated in ${shortName(doc.fileName)}.`,
-        concept_tag: 'general comprehension',
-        code_context: shortName(doc.fileName),
-        file: shortName(doc.fileName),
-    };
 }
 function shortName(filePath) {
     return filePath.split('/').pop() ?? filePath;
