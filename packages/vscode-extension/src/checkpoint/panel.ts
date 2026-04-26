@@ -79,8 +79,8 @@ function renderHtml(
   <p style="margin:4px 0 2px 0;font-size:16px;font-weight:600">We found ${totalChanged} changed function${totalChanged === 1 ? '' : 's'} that may affect your codebase.</p>
   <p style="margin:0 0 12px 0;color:#cfd8dc">Estimated impact: <strong>${impact}</strong></p>
   <div style="display:flex;gap:8px;margin-bottom:16px">
-    <button id="passBtn" style="padding:8px 12px;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer">Mark Pass</button>
-    <button id="failBtn" style="padding:8px 12px;background:#b71c1c;color:#fff;border:none;border-radius:6px;cursor:pointer">Mark Fail</button>
+    <button id="passBtn" style="padding:8px 12px;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer">Bypass and Commit</button>
+    <button id="failBtn" style="padding:8px 12px;background:#b71c1c;color:#fff;border:none;border-radius:6px;cursor:pointer">Reject Commit</button>
   </div>
   <p id="status" style="color:#ccc"></p>
   <div id="cards">${cards || '<p style="color:#ccc">No changed functions found in current staged diff.</p>'}</div>
@@ -182,14 +182,12 @@ function renderHtml(
         const action = target.getAttribute('data-action');
         const changedFunction = target.getAttribute('data-function') || '';
         const checkpointId = target.getAttribute('data-checkpoint-id') || '';
+        if (action !== 'answer') return;
         if (action === 'answer') {
           toggleAnswerBox(checkpointId, true);
           status.textContent = 'Provide your answer for ' + changedFunction + '.';
           return;
         }
-        vscode.postMessage({ type: action, changedFunction, checkpointId });
-        if (action === 'skip') status.textContent = 'Skipped ' + changedFunction + '.';
-        if (action === 'explain') status.textContent = 'Explain request sent for ' + changedFunction + '.';
       });
     });
     document.querySelectorAll('[data-answer-submit]').forEach((button) => {
@@ -448,8 +446,6 @@ function renderQuestionCard(item: PanelQuestion, index: number): string {
     </div>
     <div data-card-controls style="display:flex;gap:8px;flex-wrap:wrap">
       <button data-action="answer" data-function="${changedFunction}" data-checkpoint-id="${checkpointId}" data-index="${index}" style="padding:6px 10px;background:#1565c0;color:#fff;border:none;border-radius:6px;cursor:pointer">Answer</button>
-      <button data-action="skip" data-function="${changedFunction}" data-checkpoint-id="${checkpointId}" data-index="${index}" style="padding:6px 10px;background:#546e7a;color:#fff;border:none;border-radius:6px;cursor:pointer">Skip</button>
-      <button data-action="explain" data-function="${changedFunction}" data-checkpoint-id="${checkpointId}" data-index="${index}" style="padding:6px 10px;background:#6a1b9a;color:#fff;border:none;border-radius:6px;cursor:pointer">Explain this code</button>
     </div>
   </section>`;
 }
