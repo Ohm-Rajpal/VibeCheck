@@ -1,0 +1,19 @@
+{
+  "name": "vibecheck-monorepo",
+  "private": true,
+  "version": "0.0.1",
+  "description": "VibeCheck monorepo root.",
+  "workspaces": [
+    "packages/vscode-extension",
+    "packages/vscode-extension/webview",
+    "packages/hooks"
+  ],
+  "scripts": {
+    "compile": "npm run compile --workspace=vibecheck",
+    "watch": "npm run watch --workspace=vibecheck",
+    "build:webview": "npm run build --workspace=vibecheck-webview",
+    "build": "npm run build:webview && npm run compile",
+    "dev:webview": "npm run dev --workspace=vibecheck-webview",
+    "install-hook": "npm run install-hook --workspace=vibecheck-hooks"
+  }
+}
