@@ -16,6 +16,7 @@
     "dev:webview": "npm run dev --workspace=vibecheck-webview",
     "install-hook": "npm run install-hook --workspace=vibecheck-hooks",
     "update:extension": "bash scripts/update-editor-extension.sh",
-    "start:api": "bash scripts/start-api.sh"
+    "start:api": "bash scripts/start-api.sh",
+    "seed:demo": ".venv/bin/python scripts/seed-sessions.py --auto --replace"
   }
 }

@@ -25,6 +25,7 @@ VibeCheck is **two processes**. Both must be running for the demo to work end-to
 |---|---|---|---|
 | 1 | `npm run update:extension` | Compiles the TS extension, packages a `.vsix`, and installs it into every detected editor (Windsurf, VS Code, Cursor, …). | **Every time you edit extension code.** Then **reload the editor window** (`Ctrl+Shift+P` → `Developer: Reload Window`). |
 | 2 | `npm run start:api` | Starts the Python FastAPI backend on `localhost:8000` (Gemma questions, grading, metrics). | Once per session. Hot-reloads on Python edits. |
+| 3 (optional) | `npm run seed:demo` | Pre-fills the **Session history** chart with 8 fake sessions telling a "vibing → cooking" trend story. Great for screen-share demos. | When you want a clean, story-rich dashboard. Idempotent — re-running replaces the seed. |
 
 > **Important:** `npm run update:extension` does **not** start the backend. `npm run start:api` does **not** install the extension. They are independent — you need both.
 
@@ -43,6 +44,41 @@ Whenever you edit extension TypeScript, rerun `npm run update:extension` and rel
 
 The `update:extension` script lives at `scripts/update-editor-extension.sh`.
 The `start:api` script lives at `scripts/start-api.sh`.
+
+### Demo seeding (optional)
+
+For demos and screen recordings the Growth dashboard looks much more
+compelling with an existing trend than with an empty bar chart. The
+seed script populates the `sessions` collection with 8 fake snapshots
+that visibly slope from "heavy vibing" to "majority learning + cooking",
+ending ~12 hours before now so a live Reset during the demo lands a
+fresh bar at the right edge that extends the pattern.
+
+```bash
+# 1. Make sure the API is running and you've reloaded Windsurf so the
+#    extension fires GET /metrics/summary at least once. That registers
+#    your machine_id in MongoDB so --auto can find it.
+# 2. Then:
+npm run seed:demo
+```
+
+`npm run seed:demo` runs `python scripts/seed-sessions.py --auto --replace`:
+
+- `--auto` — auto-detects `vscode.env.machineId` from the `users` registry,
+  falling back to recent events / sessions if needed. No need to copy/paste an id.
+- `--replace` — wipes any prior seed for that machine before inserting,
+  so re-running is safe.
+
+If you'd rather control the user_id explicitly:
+
+```bash
+.venv/bin/python scripts/seed-sessions.py --user-id <your_machine_id>
+```
+
+Reopen the **VibeCheck activity-bar panel** after seeding (or close+reopen
+the panel) and the **📊 Session history** chart below the Reset button
+will be populated. Hover any bar to morph the donut and headline into
+that past session's snapshot.
 
 ---
 

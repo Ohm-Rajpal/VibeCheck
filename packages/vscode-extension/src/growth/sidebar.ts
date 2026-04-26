@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import {
+  fetchSessions,
   getLatestSummary,
   onSummaryChange,
   refreshSummary,
@@ -36,19 +37,32 @@ class GrowthViewProvider implements vscode.WebviewViewProvider {
     } else {
       void refreshSummary();
     }
+    // Also push the saved session history (one HTTP call) so the
+    // trend bar chart paints on first mount.
+    void postSessions(view);
 
     const subscription = onSummaryChange((s) => {
       void view.webview.postMessage({ kind: 'summary', summary: s });
     });
 
-    // Webview can also actively request the current state (e.g. after
-    // a tab restore that re-mounts the iframe).
-    const msgSub = view.webview.onDidReceiveMessage((msg) => {
+    // Webview can also actively request state (after a tab restore
+    // that re-mounts the iframe) or trigger the reset command from
+    // its in-page button.
+    const msgSub = view.webview.onDidReceiveMessage(async (msg) => {
       if (msg?.kind === 'request-summary') {
         const latest = getLatestSummary();
         if (latest) {
           void view.webview.postMessage({ kind: 'summary', summary: latest });
         }
+      } else if (msg?.kind === 'request-sessions') {
+        await postSessions(view);
+      } else if (msg?.kind === 'reset-metrics') {
+        // Delegate to the registered command so the modal confirm +
+        // toast logic stays in one place (extension.ts). After the
+        // reset returns we re-fetch the session list so the new
+        // snapshot appears in the trend chart immediately.
+        await vscode.commands.executeCommand('vibecheck.resetMetrics');
+        await postSessions(view);
       }
     });
 
@@ -60,6 +74,17 @@ class GrowthViewProvider implements vscode.WebviewViewProvider {
       }
     });
   }
+}
+
+/**
+ * One-shot helper: fetch the user's saved sessions and push them to
+ * the webview. Centralized so we can call it on mount, on demand from
+ * the page, and after each reset without duplicating the message
+ * shape in three places.
+ */
+async function postSessions(view: vscode.WebviewView): Promise<void> {
+  const sessions = await fetchSessions(30);
+  void view.webview.postMessage({ kind: 'sessions', sessions });
 }
 
 export function activateGrowthSidebar(context: vscode.ExtensionContext) {
@@ -223,6 +248,137 @@ function renderHtml(): string {
     margin-top: 24px;
     line-height: 1.6;
   }
+  .history-section {
+    margin-top: 24px;
+    padding-top: 16px;
+    border-top: 1px solid var(--track);
+  }
+  .history-header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .history-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--fg);
+    letter-spacing: 0.2px;
+  }
+  .history-count {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  /* Bar chart container — flex row so bars space themselves evenly. */
+  .history-chart {
+    display: flex;
+    align-items: flex-end;
+    gap: 3px;
+    height: 96px;
+    margin-bottom: 6px;
+  }
+  .bar-col {
+    flex: 1;
+    min-width: 6px;
+    height: 100%;
+    display: flex;
+    flex-direction: column-reverse; /* bottom-up stacking */
+    border-radius: 2px;
+    overflow: hidden;
+    cursor: default;
+    transition: transform 100ms ease;
+    position: relative;
+  }
+  /* Intentionally NO transform on hover — scaling the bar made
+     the cursor cross bar boundaries, causing the preview to flicker
+     between adjacent sessions. The .hovered ring + dimmed siblings
+     already give enough visual feedback. */
+  /* While ANY bar is hovered, dim the others so the focused session
+     stands out — same affordance the donut uses on slice hover. */
+  .history-chart.dim .bar-col:not(.hovered) {
+    opacity: 0.35;
+  }
+  .history-chart .bar-col.hovered {
+    box-shadow: 0 0 0 1px var(--fg);
+  }
+  /* Legend-driven highlight: when the user hovers a single gauge in
+     the legend, fade out the OTHER segments across every bar so the
+     time series of just that gauge pops out. */
+  .history-chart.focus-vibing   .bar-seg.learning,
+  .history-chart.focus-vibing   .bar-seg.cooking,
+  .history-chart.focus-learning .bar-seg.vibing,
+  .history-chart.focus-learning .bar-seg.cooking,
+  .history-chart.focus-cooking  .bar-seg.vibing,
+  .history-chart.focus-cooking  .bar-seg.learning {
+    opacity: 0.18;
+  }
+  .bar-seg {
+    width: 100%;
+    transition: opacity 120ms ease;
+  }
+  .bar-seg.vibing   { background: var(--vibing); }
+  .bar-seg.learning { background: var(--learning); }
+  .bar-seg.cooking  { background: var(--cooking); }
+  .history-hint {
+    margin-top: 8px;
+    font-size: 10px;
+    color: var(--muted);
+    font-style: italic;
+    text-align: center;
+  }
+  .bar-axis {
+    display: flex;
+    gap: 3px;
+    font-size: 9px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .bar-axis span {
+    flex: 1;
+    min-width: 6px;
+    text-align: center;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .history-empty {
+    text-align: center;
+    color: var(--muted);
+    font-size: 11px;
+    padding: 18px 4px 4px;
+    line-height: 1.5;
+  }
+  .reset-row {
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid var(--track);
+    display: flex;
+    justify-content: center;
+  }
+  .reset-btn {
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--track);
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: 11px;
+    font-family: inherit;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  }
+  .reset-btn:hover {
+    color: var(--vscode-errorForeground, var(--vibing));
+    border-color: var(--vscode-errorForeground, var(--vibing));
+    background: var(--track);
+  }
+  .reset-btn:active {
+    transform: translateY(1px);
+  }
 </style>
 </head>
 <body>
@@ -234,7 +390,7 @@ function renderHtml(): string {
     <circle class="track" cx="50" cy="50" r="40" />
   </svg>
   <div class="center-label" id="center">
-    <div class="center-pct" id="center-pct">–</div>
+    <div class="center-pct" id="center-pct">-</div>
     <div class="center-name" id="center-name">no data yet</div>
   </div>
 </div>
@@ -243,6 +399,29 @@ function renderHtml(): string {
 <div class="empty" id="empty" style="display:none">
   No AI generations detected yet.<br/>
   Trigger one with <b>Ctrl+Shift+P → VibeCheck: Simulate AI Burst</b>.
+</div>
+
+<div class="reset-row">
+  <button type="button" class="reset-btn" id="reset-btn"
+    title="Snapshots current metrics into history, then wipes the live counters.">
+    ⟲ Reset metrics
+  </button>
+</div>
+
+<div class="history-section" id="history-section">
+  <div class="history-header">
+    <span class="history-title">📊 Session history</span>
+    <span class="history-count" id="history-count">— sessions</span>
+  </div>
+  <div class="history-chart" id="history-chart"></div>
+  <div class="bar-axis" id="history-axis"></div>
+  <div class="history-empty" id="history-empty">
+    No saved sessions yet. Hit <b>⟲ Reset metrics</b> above to bank your
+    current numbers as the first snapshot.
+  </div>
+  <div class="history-hint" id="history-hint">
+    Hover a bar to preview that session's mix in the donut above.
+  </div>
 </div>
 
 <script>
@@ -271,8 +450,14 @@ function renderHtml(): string {
   const legendEl  = document.getElementById('legend');
   const emptyEl   = document.getElementById('empty');
 
-  let currentSummary = null;
+  let currentSummary = null;   // live summary from the extension host
+  let viewSummary = null;      // what the donut/center are currently rendering
+                               // (== currentSummary unless previewing history)
   let hoveredKey = null; // legend or slice currently under cursor
+  // Session history state — populated by renderHistory, consumed by
+  // previewSession when the user scrubs across the timeline bars.
+  let historySessions = [];
+  let previewIdx = null;
 
   function getCount(s, key) {
     if (key === 'vibing')   return s.vibing_count;
@@ -322,7 +507,7 @@ function renderHtml(): string {
     if (top.key === 'learning') {
       return {
         key: 'learning',
-        headline: 'Learning 🤓',
+        headline: 'We are learning! 📚 🤓',
         subtitle: 'You\\'re passing comprehension checks. ' +
           'Your understanding of AI-written code is compounding.'
       };
@@ -448,6 +633,15 @@ function renderHtml(): string {
         el.classList.remove('hovered')
       );
     }
+    // Mirror the donut's focus into the history chart so hovering a
+    // legend row also fades the unrelated segments across every past
+    // session — turns the history strip into a per-gauge time series.
+    if (chartEl) {
+      chartEl.classList.remove(
+        'focus-vibing', 'focus-learning', 'focus-cooking'
+      );
+      if (key) chartEl.classList.add('focus-' + key);
+    }
     updateCenter();
   }
 
@@ -455,7 +649,11 @@ function renderHtml(): string {
   // When the user is hovering a gauge → show that gauge's pct + name.
   // Otherwise → show the dominant gauge's pct + name.
   function updateCenter() {
-    const s = currentSummary;
+    // Always read from viewSummary, NOT currentSummary — when the user
+    // is scrubbing past sessions, currentSummary is the (possibly
+    // empty) live state and would wrongly trigger the "no data yet"
+    // copy while the donut clearly shows a past session.
+    const s = viewSummary;
     if (!s || s.generated === 0) {
       centerPct.textContent = '–';
       centerName.textContent = 'no data yet';
@@ -476,11 +674,40 @@ function renderHtml(): string {
   }
 
   // ── Main render entry ───────────────────────────────────────────
-  function render(s) {
-    currentSummary = s;
-    const winner = pickWinner(s);
-    headline.textContent = winner.headline;
-    subtitle.textContent = winner.subtitle;
+  // 's' is the summary to display (live OR a past session being
+  // previewed). When 'isPreview' is true we DO NOT mutate
+  // currentSummary — the live data is preserved so mouseleave can
+  // restore it cleanly. 'previewTime' (ISO) feeds the headline copy
+  // in preview mode.
+  function render(s, isPreview, previewTime) {
+    if (!isPreview) {
+      currentSummary = s;
+    }
+    // viewSummary tracks whatever is on screen — live OR preview — so
+    // the center label, headline, and tooltips read coherent numbers.
+    viewSummary = s;
+
+    if (isPreview) {
+      // Past-session preview: replace the celebratory headline with a
+      // neutral "you're looking at history" copy that includes the
+      // session's timestamp. Reverts on mouseleave.
+      const when = previewTime
+        ? new Date(previewTime).toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: '2-digit',
+          })
+        : 'a past session';
+      headline.textContent = 'Past session — ' + when;
+      subtitle.textContent =
+        'Hover continues to scrub the timeline. Move off the bar to ' +
+        'return to the live view.';
+    } else {
+      const winner = pickWinner(s);
+      headline.textContent = winner.headline;
+      subtitle.textContent = winner.subtitle;
+    }
 
     if (!s || s.generated === 0) {
       emptyEl.style.display = 'block';
@@ -496,15 +723,176 @@ function renderHtml(): string {
   // Initial state until first message arrives.
   render(null);
 
+  // ── Session history bar chart ───────────────────────────────────
+  // Each saved snapshot becomes one stacked bar: vibing on the bottom
+  // (red), learning in the middle (green), cooking on top (blue).
+  // Heights are percentages so every bar reaches the chart top —
+  // making "is my mix improving?" the dominant visual question.
+  const chartEl    = document.getElementById('history-chart');
+  const axisEl     = document.getElementById('history-axis');
+  const histEmpty  = document.getElementById('history-empty');
+  const histCount  = document.getElementById('history-count');
+
+  function renderHistory(sessions) {
+    // Cache so bar-hover handlers can pull session data by index.
+    historySessions = Array.isArray(sessions) ? sessions : [];
+
+    chartEl.innerHTML = '';
+    axisEl.innerHTML = '';
+
+    if (historySessions.length === 0) {
+      histEmpty.style.display = 'block';
+      chartEl.style.display = 'none';
+      axisEl.style.display = 'none';
+      histCount.textContent = '— sessions';
+      return;
+    }
+
+    histEmpty.style.display = 'none';
+    chartEl.style.display = 'flex';
+    axisEl.style.display = 'flex';
+    histCount.textContent =
+      historySessions.length +
+      ' session' + (historySessions.length === 1 ? '' : 's');
+
+    historySessions.forEach((s, idx) => {
+      const col = document.createElement('div');
+      col.className = 'bar-col';
+      col.dataset.idx = String(idx);
+
+      // Three stacked segments. Order matters because the parent uses
+      // flex-direction: column-reverse, so the FIRST appended child
+      // sits at the BOTTOM. We want vibing on the bottom (the "bad"
+      // base layer the user is trying to shrink), then learning, then
+      // cooking on top.
+      const segs = [
+        { cls: 'vibing',   pct: s.vibing_pct },
+        { cls: 'learning', pct: s.learning_pct },
+        { cls: 'cooking',  pct: s.cooking_pct },
+      ];
+      segs.forEach((seg) => {
+        if (seg.pct <= 0) return;
+        const el = document.createElement('div');
+        el.className = 'bar-seg ' + seg.cls;
+        el.style.height = seg.pct + '%';
+        col.appendChild(el);
+      });
+
+      // Native tooltip: timestamp + percentages + raw counts. The
+      // VSCode webview style guide discourages custom tooltips when
+      // the OS one is sufficient.
+      col.title = formatTooltip(s);
+
+      // Hover handler: temporarily swap the donut + center label to
+      // show this past session's mix. The user can scrub left-to-right
+      // across the timeline and watch the donut redraw — much more
+      // tangible than reading numbers from a tooltip.
+      col.addEventListener('mouseenter', () => previewSession(idx));
+      col.addEventListener('mouseleave', () => previewSession(null));
+
+      chartEl.appendChild(col);
+
+      // Axis label — only render every Nth label so they never overlap
+      // when the user has 20+ sessions in a narrow sidebar.
+      const stride = Math.max(1, Math.ceil(historySessions.length / 6));
+      const labelEl = document.createElement('span');
+      labelEl.textContent =
+        (idx === historySessions.length - 1 || idx % stride === 0)
+          ? formatAxisDate(s.ended_at)
+          : '';
+      axisEl.appendChild(labelEl);
+    });
+  }
+
+  // ── Preview state for bar-hover-morphs-donut ────────────────────
+  // When set to a session index, the donut renders that session's
+  // numbers instead of the live summary, and the center label shows
+  // the session's timestamp. Returning to null restores the live view.
+  function previewSession(idx) {
+    previewIdx = idx;
+    if (idx === null) {
+      chartEl.classList.remove('dim');
+      chartEl.querySelectorAll('.bar-col.hovered').forEach(c =>
+        c.classList.remove('hovered')
+      );
+      // Re-render donut from live summary.
+      render(currentSummary, /*isPreview*/ false);
+    } else {
+      chartEl.classList.add('dim');
+      chartEl.querySelectorAll('.bar-col').forEach(c =>
+        c.classList.toggle('hovered', c.dataset.idx === String(idx))
+      );
+      // Re-render donut from this past snapshot. We synthesize a
+      // VibeSummary-shaped object using the same field names so the
+      // existing renderers don't need a special-case path.
+      const s = historySessions[idx];
+      render(
+        {
+          generated: s.generated,
+          passed: s.passed,
+          overridden: s.overridden,
+          dismissed: s.dismissed,
+          vibing_count: s.vibing_count,
+          vibing_pct: s.vibing_pct,
+          learning_pct: s.learning_pct,
+          cooking_pct: s.cooking_pct,
+          submitted: 0,
+          passed_first_try: 0,
+          first_try_rate_pct: 0,
+          reviewed: s.passed + s.overridden,
+        },
+        /*isPreview*/ true,
+        s.ended_at
+      );
+    }
+  }
+
+  function formatTooltip(s) {
+    const when = s.ended_at
+      ? new Date(s.ended_at).toLocaleString()
+      : 'unknown time';
+    return (
+      'Session ended: ' + when + '\\n' +
+      '😎 Vibing:   ' + s.vibing_pct + '%  (' + s.vibing_count + ')\\n' +
+      '🤓 Learning: ' + s.learning_pct + '%  (' + s.passed + ')\\n' +
+      '🚀 Cooking:  ' + s.cooking_pct + '%  (' + s.overridden + ')\\n' +
+      'Total AI regions: ' + s.generated
+    );
+  }
+
+  function formatAxisDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    // Compact: "Apr 26" — days are the natural granularity for trend
+    // viewing across many sessions.
+    return d.toLocaleDateString(undefined, {
+      month: 'short',
+      day: 'numeric',
+    });
+  }
+
   window.addEventListener('message', (event) => {
     const msg = event.data;
     if (msg && msg.kind === 'summary') {
       render(msg.summary);
+    } else if (msg && msg.kind === 'sessions') {
+      renderHistory(msg.sessions);
     }
   });
 
   // Ask for the latest summary on (re)mount.
   vscode.postMessage({ kind: 'request-summary' });
+  vscode.postMessage({ kind: 'request-sessions' });
+
+  // Reset button → ask the extension host to run the registered
+  // command. We DON'T inline the confirm here because the modal
+  // dialog needs the extension API; keeping the prompt in
+  // extension.ts also means /Ctrl+Shift+P → "Reset My Metrics" and
+  // this button share identical UX.
+  document.getElementById('reset-btn').addEventListener('click', () => {
+    vscode.postMessage({ kind: 'reset-metrics' });
+  });
 })();
 </script>
 </body>

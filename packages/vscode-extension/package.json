@@ -2,7 +2,7 @@
   "name": "vibecheck",
   "displayName": "VibeCheck",
   "description": "Comprehension checkpoints for AI-generated code (Windsurf + Devin).",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "publisher": "vibecheck",
   "engines": {
     "vscode": "^1.85.0"
@@ -23,6 +23,10 @@
       {
         "command": "vibecheck.simulateAIBurst",
         "title": "VibeCheck: Simulate AI Burst (test detection)"
+      },
+      {
+        "command": "vibecheck.resetMetrics",
+        "title": "VibeCheck: Reset My Metrics"
       },
       {
         "command": "vibecheck.submitAnswer",

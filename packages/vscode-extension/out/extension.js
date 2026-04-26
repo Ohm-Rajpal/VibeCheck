@@ -100,6 +100,39 @@ function activate(context) {
     // 6. Commands.
     context.subscriptions.push(vscode.commands.registerCommand('vibecheck.showGrowth', () => {
         vscode.commands.executeCommand('workbench.view.extension.vibecheck');
+    }), vscode.commands.registerCommand('vibecheck.resetMetrics', async () => {
+        // Confirm before nuking — even though it's scoped to this user's
+        // events, undo isn't available once Mongo deletes the docs.
+        const confirm = await vscode.window.showWarningMessage('Reset all VibeCheck metrics for this machine? ' +
+            'This deletes every recorded event from the database. ' +
+            'Other users on this MongoDB cluster are unaffected.', { modal: true }, 'Reset');
+        if (confirm !== 'Reset') {
+            return;
+        }
+        // Wipe in-memory unverified regions too so the yellow margin
+        // highlights, the "N unverified" status-bar counter, and the
+        // decorator stripes clear at the same instant the gauges zero
+        // out. Without this, the gauges would say "no data" while the
+        // editor still shows leftover unverified regions from before
+        // the reset.
+        regionTracker_1.regionTracker.clearAll();
+        const result = await (0, recorder_1.resetMetrics)();
+        if (result.ok) {
+            // Two distinct success messages so the user knows whether the
+            // reset also produced a session snapshot for the trend chart.
+            const snapshotMsg = result.snapshotted
+                ? ' Session snapshot saved to history.'
+                : '';
+            vscode.window.showInformationMessage(`VibeCheck: metrics reset (${result.deleted} events deleted).` +
+                snapshotMsg);
+        }
+        else {
+            // Optimistic broadcast already zeroed the gauges locally, so the
+            // UI is still in the expected state — but the server didn't
+            // confirm. Surface that so the user knows to investigate.
+            vscode.window.showWarningMessage('VibeCheck: gauges cleared locally, but the backend did not ' +
+                'confirm the delete. Check the API server is running.');
+        }
     }), vscode.commands.registerCommand('vibecheck.simulateAIBurst', async () => {
         // Find a usable text editor — `activeTextEditor` is undefined when
         // focus is on a webview/panel, so fall back to any visible editor.
@@ -159,7 +192,7 @@ function updateStatusBar(item, extensionPath) {
         item.tooltip = new vscode.MarkdownString(`No unverified AI regions.\n\n` +
             `**Metrics:** ${metrics}\n\n` +
             `**Loaded extension path:**\n\n\`${extensionPath}\`\n\n` +
-            `If you do not see 🔥/🧠 in this status item, the Extension Host is loading stale code.`);
+            `If you do not see ${VIBING_ICON}/${LEARNING_ICON}/${COOKING_ICON} in this status item, the Extension Host is loading stale code.`);
         item.backgroundColor = undefined;
     }
     else {
@@ -173,10 +206,13 @@ function updateStatusBar(item, extensionPath) {
 function latestMetricText() {
     const summary = currentSummary;
     if (!summary || summary.generated === 0) {
-        return '🔥– 🧠–';
+        return `${VIBING_ICON}– ${LEARNING_ICON}– ${COOKING_ICON}–`;
     }
-    return `🔥${summary.vibing_pct}% 🧠${summary.learning_pct}%`;
+    return `${VIBING_ICON}${summary.vibing_pct}% ${LEARNING_ICON}${summary.learning_pct}% ${COOKING_ICON}${summary.cooking_pct}%`;
 }
 let currentSummary;
+const VIBING_ICON = '\u{1F60E}';
+const LEARNING_ICON = '\u{1F913}';
+const COOKING_ICON = '\u{1F680}';
 function deactivate() { }
 //# sourceMappingURL=extension.js.map

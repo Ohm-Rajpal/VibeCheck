@@ -103,6 +103,7 @@ function normalizeSummary(s: VibeSummary): VibeSummary {
   const reviewed = s.passed + s.overridden;
   const generated = Math.max(s.generated, reviewed + s.dismissed);
   const vibing_count = Math.max(generated - reviewed, 0);
+  const hasCooking = s.overridden > 0;
 
   // Three-way partition. We round learning + cooking down (Math.round)
   // and let vibing absorb whatever remainder is left so the trio sums
@@ -111,7 +112,7 @@ function normalizeSummary(s: VibeSummary): VibeSummary {
   const learning_pct = generated
     ? Math.round((100 * s.passed) / generated)
     : 0;
-  const cooking_pct = generated
+  const cooking_pct = generated && hasCooking
     ? Math.round((100 * s.overridden) / generated)
     : 0;
   const vibing_pct = generated
@@ -191,6 +192,90 @@ export async function recordEvent(
     }
   } catch {
     // Metrics failures must never surface to editor UX.
+  }
+}
+
+export interface SessionSnapshot {
+  ended_at: string | null;
+  vibing_pct: number;
+  learning_pct: number;
+  cooking_pct: number;
+  generated: number;
+  passed: number;
+  overridden: number;
+  vibing_count: number;
+  dismissed: number;
+}
+
+export interface ResetResult {
+  ok: boolean;
+  deleted: number;
+  snapshotted: boolean;
+}
+
+/**
+ * Snapshot the current summary into the `sessions` collection on the
+ * server, then wipe every event for the current user_id. Optimistic
+ * local broadcast clears the gauges immediately so the UI reflects
+ * the user's intent even before the network round-trip finishes.
+ */
+export async function resetMetrics(): Promise<ResetResult> {
+  // Optimistic: zero out the cached summary so the status bar + sidebar
+  // show "no data" the instant the user clicks the command, instead of
+  // showing stale numbers until the POST returns.
+  broadcast(emptySummary());
+
+  const user_id = getUserId();
+  try {
+    const res = await fetch(`${BACKEND_URL}/metrics/reset`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ user_id }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) {
+      return { ok: false, deleted: 0, snapshotted: false };
+    }
+    const json = (await res.json()) as {
+      ok?: boolean;
+      deleted?: number;
+      snapshotted?: boolean;
+      summary?: VibeSummary;
+    };
+    if (json.summary) {
+      broadcast(normalizeSummary(json.summary));
+    }
+    return {
+      ok: !!json.ok,
+      deleted: json.deleted ?? 0,
+      snapshotted: !!json.snapshotted,
+    };
+  } catch {
+    return { ok: false, deleted: 0, snapshotted: false };
+  }
+}
+
+/**
+ * Fetch the user's saved session snapshots (oldest → newest) for the
+ * Growth dashboard's history bar chart. Empty array on any failure —
+ * the chart simply won't render in that case.
+ */
+export async function fetchSessions(
+  limit: number = 30
+): Promise<SessionSnapshot[]> {
+  const user_id = getUserId();
+  try {
+    const res = await fetch(
+      `${BACKEND_URL}/metrics/sessions?user_id=${encodeURIComponent(
+        user_id
+      )}&limit=${limit}`,
+      { signal: AbortSignal.timeout(3000) }
+    );
+    if (!res.ok) return [];
+    const json = (await res.json()) as { sessions?: SessionSnapshot[] };
+    return json.sessions ?? [];
+  } catch {
+    return [];
   }
 }
 

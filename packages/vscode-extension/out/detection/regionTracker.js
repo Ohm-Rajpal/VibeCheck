@@ -240,6 +240,17 @@ class RegionTracker {
         }
         return { total, unverified, files: this.byFile.size };
     }
+    // Wipe every tracked region across every file. Used by the
+    // "Reset Metrics" command so unverified highlights, the status-bar
+    // counter, and the decorator margins all clear in lockstep with the
+    // backend event delete. Emits one change per affected file so each
+    // open editor's decorator picks up the empty list.
+    clearAll() {
+        const files = Array.from(this.byFile.keys());
+        this.byFile.clear();
+        for (const f of files)
+            this.emit(f);
+    }
 }
 exports.regionTracker = new RegionTracker();
 //# sourceMappingURL=regionTracker.js.map

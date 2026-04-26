@@ -3,8 +3,10 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 EXT_DIR="$ROOT_DIR/packages/vscode-extension"
-VSIX_PATH="$EXT_DIR/vibecheck-0.0.1.vsix"
 TSC_BIN="$EXT_DIR/node_modules/typescript/bin/tsc"
+# VSIX_PATH is resolved dynamically AFTER packaging so version bumps in
+# package.json don't silently install the previous build (we used to
+# hardcode vibecheck-0.0.1.vsix and it stuck around forever).
 
 log() {
   printf '\n\033[1;36m==> %s\033[0m\n' "$1"
@@ -35,6 +37,9 @@ else
 fi
 
 log "Packaging VSIX"
+# Wipe any stale VSIXes from previous versions so the "newest by mtime"
+# resolution below can't accidentally pick up an older build.
+rm -f "$EXT_DIR"/vibecheck-*.vsix
 if [[ -x "$EXT_DIR/node_modules/.bin/vsce" ]]; then
   (cd "$EXT_DIR" && "$EXT_DIR/node_modules/.bin/vsce" package --no-dependencies)
 elif [[ -x "$EXT_DIR/node_modules/.bin/vsce.cmd" ]]; then
@@ -43,10 +48,14 @@ else
   (cd "$EXT_DIR" && npx --yes @vscode/vsce package --no-dependencies)
 fi
 
-if [[ ! -f "$VSIX_PATH" ]]; then
-  warn "Expected VSIX not found at $VSIX_PATH"
+# Find the freshly-built VSIX. There should be exactly one; if not,
+# pick the most recently modified so we never install a stale build.
+VSIX_PATH="$(ls -t "$EXT_DIR"/vibecheck-*.vsix 2>/dev/null | head -n1 || true)"
+if [[ -z "$VSIX_PATH" || ! -f "$VSIX_PATH" ]]; then
+  warn "No VSIX was produced by vsce package."
   exit 1
 fi
+log "Built $VSIX_PATH"
 
 install_if_available windsurf
 install_if_available code
