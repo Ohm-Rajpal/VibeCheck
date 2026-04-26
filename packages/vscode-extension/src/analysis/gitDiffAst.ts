@@ -61,7 +61,6 @@ export function generateQuestionsFromGitDiff(
   workspaceRoot: string,
   options?: { staged?: boolean }
 ): Question[] {
-  const paper = "paper";
   const files = parseChangedFiles(workspaceRoot, options?.staged ?? false);
   const tsOrJsFiles = files.filter((file) => isTsOrJsFile(file.filePath));
   const pythonFiles = files.filter((file) => isPythonFile(file.filePath));
