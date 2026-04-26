@@ -71,6 +71,16 @@ The VSIX is portable. Use that editor's CLI or UI:
 - **Windsurf**: `windsurf --install-extension vibecheck-0.0.1.vsix`
 - **Any fork**: open the Extensions panel (`Ctrl+Shift+X`) → click the `…` menu at the top → **`Install from VSIX…`** → select the file.
 
+### Update installed editor copies
+
+After changing extension code, update all detected editor installs from the repo root:
+
+```bash
+npm run update:extension
+```
+
+This compiles the extension, packages `vibecheck-0.0.1.vsix`, and force-installs it into available VSCode-compatible CLIs such as `windsurf`, `code`, `cursor`, `code-insiders`, and `codium`. Reload each editor window afterward.
+
 ### Uninstall
 
 ```bash

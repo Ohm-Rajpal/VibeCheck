@@ -127,7 +127,8 @@
     "compile": "tsc -p .",
     "watch": "tsc -w -p .",
     "build:webview": "cd webview && npm run build",
-    "package": "vsce package --no-dependencies"
+    "package": "vsce package --no-dependencies",
+    "update:extension": "bash ../../scripts/update-editor-extension.sh"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
