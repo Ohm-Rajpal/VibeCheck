@@ -15,6 +15,7 @@
     "build": "npm run build:webview && npm run compile",
     "dev:webview": "npm run dev --workspace=vibecheck-webview",
     "install-hook": "npm run install-hook --workspace=vibecheck-hooks",
-    "update:extension": "bash scripts/update-editor-extension.sh"
+    "update:extension": "bash scripts/update-editor-extension.sh",
+    "start:api": "bash scripts/start-api.sh"
   }
 }

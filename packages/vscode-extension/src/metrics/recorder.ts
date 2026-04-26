@@ -74,6 +74,69 @@ function broadcast(s: VibeSummary): void {
   }
 }
 
+function emptySummary(): VibeSummary {
+  return {
+    generated: 0,
+    reviewed: 0,
+    submitted: 0,
+    passed: 0,
+    passed_first_try: 0,
+    first_try_rate_pct: 0,
+    overridden: 0,
+    dismissed: 0,
+    vibing_count: 0,
+    vibing_pct: 0,
+    learning_pct: 0,
+  };
+}
+
+function normalizeSummary(s: VibeSummary): VibeSummary {
+  const reviewed = s.passed + s.overridden;
+  const generated = Math.max(s.generated, reviewed + s.dismissed);
+  const vibing_count = Math.max(generated - reviewed, 0);
+  const vibing_pct = generated ? Math.round((100 * vibing_count) / generated) : 0;
+  const learning_pct = generated ? 100 - vibing_pct : 0;
+  const first_try_rate_pct = generated
+    ? Math.round((100 * s.passed_first_try) / generated)
+    : 0;
+  return {
+    ...s,
+    generated,
+    reviewed,
+    vibing_count,
+    vibing_pct,
+    learning_pct,
+    first_try_rate_pct,
+  };
+}
+
+function broadcastOptimistic(kind: VibeEventKind, meta: Record<string, unknown>): void {
+  const s: VibeSummary = { ...(latest ?? emptySummary()) };
+  switch (kind) {
+    case 'ai_generated':
+      s.generated += 1;
+      break;
+    case 'answer_submitted':
+      s.submitted += 1;
+      break;
+    case 'answer_passed':
+      s.passed += 1;
+      if (meta.attempt === 1 || meta.first_try === true) {
+        s.passed_first_try += 1;
+      }
+      break;
+    case 'checkpoint_overridden':
+      s.overridden += 1;
+      break;
+    case 'checkpoint_dismissed':
+      s.dismissed += 1;
+      break;
+    case 'checkpoint_opened':
+      break;
+  }
+  broadcast(normalizeSummary(s));
+}
+
 function getUserId(): string {
   // Stable per VSCode installation. Good enough for demo — no PII, no
   // login required.
@@ -88,6 +151,7 @@ export async function recordEvent(
   meta: Record<string, unknown> = {}
 ): Promise<void> {
   const user_id = getUserId();
+  broadcastOptimistic(kind, meta);
   try {
     const res = await fetch(`${BACKEND_URL}/metrics/event`, {
       method: 'POST',
@@ -100,7 +164,7 @@ export async function recordEvent(
     }
     const json = (await res.json()) as { summary?: VibeSummary };
     if (json.summary) {
-      broadcast(json.summary);
+      broadcast(normalizeSummary(json.summary));
     }
   } catch {
     // Metrics failures must never surface to editor UX.
@@ -121,7 +185,7 @@ export async function refreshSummary(): Promise<void> {
       return;
     }
     const json = (await res.json()) as VibeSummary;
-    broadcast(json);
+    broadcast(normalizeSummary(json));
   } catch {
     // Silent.
   }

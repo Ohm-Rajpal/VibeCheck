@@ -82,6 +82,66 @@ function broadcast(s) {
         }
     }
 }
+function emptySummary() {
+    return {
+        generated: 0,
+        reviewed: 0,
+        submitted: 0,
+        passed: 0,
+        passed_first_try: 0,
+        first_try_rate_pct: 0,
+        overridden: 0,
+        dismissed: 0,
+        vibing_count: 0,
+        vibing_pct: 0,
+        learning_pct: 0,
+    };
+}
+function normalizeSummary(s) {
+    const reviewed = s.passed + s.overridden;
+    const generated = Math.max(s.generated, reviewed + s.dismissed);
+    const vibing_count = Math.max(generated - reviewed, 0);
+    const vibing_pct = generated ? Math.round((100 * vibing_count) / generated) : 0;
+    const learning_pct = generated ? 100 - vibing_pct : 0;
+    const first_try_rate_pct = generated
+        ? Math.round((100 * s.passed_first_try) / generated)
+        : 0;
+    return {
+        ...s,
+        generated,
+        reviewed,
+        vibing_count,
+        vibing_pct,
+        learning_pct,
+        first_try_rate_pct,
+    };
+}
+function broadcastOptimistic(kind, meta) {
+    const s = { ...(latest ?? emptySummary()) };
+    switch (kind) {
+        case 'ai_generated':
+            s.generated += 1;
+            break;
+        case 'answer_submitted':
+            s.submitted += 1;
+            break;
+        case 'answer_passed':
+            s.passed += 1;
+            if (meta.attempt === 1 || meta.first_try === true) {
+                s.passed_first_try += 1;
+            }
+            break;
+        case 'checkpoint_overridden':
+            s.overridden += 1;
+            break;
+        case 'checkpoint_dismissed':
+            s.dismissed += 1;
+            break;
+        case 'checkpoint_opened':
+            break;
+    }
+    broadcast(normalizeSummary(s));
+}
 function getUserId() {
     // Stable per VSCode installation. Good enough for demo — no PII, no
     // login required.
@@ -92,6 +152,7 @@ function getUserId() {
  */
 async function recordEvent(kind, meta = {}) {
     const user_id = getUserId();
+    broadcastOptimistic(kind, meta);
     try {
         const res = await fetch(`${BACKEND_URL}/metrics/event`, {
             method: 'POST',
@@ -104,7 +165,7 @@ async function recordEvent(kind, meta = {}) {
         }
         const json = (await res.json());
         if (json.summary) {
-            broadcast(json.summary);
+            broadcast(normalizeSummary(json.summary));
         }
     }
     catch {
@@ -122,7 +183,7 @@ async function refreshSummary() {
             return;
         }
         const json = (await res.json());
-        broadcast(json);
+        broadcast(normalizeSummary(json));
     }
     catch {
         // Silent.

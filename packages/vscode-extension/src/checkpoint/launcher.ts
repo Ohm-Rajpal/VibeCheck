@@ -4,6 +4,7 @@ import {
   attachQuestion,
   createCheckpointThread,
   createPendingCheckpointThread,
+  hasCheckpointThread,
 } from './commentThreads';
 import { runNativeCheckpoint } from './nativeUi';
 import {
@@ -52,45 +53,50 @@ interface QuestionResponse {
   diff_excerpt: string;
 }
 
-// Fetch a Gemma-generated question for one region. Falls back to a generic
-// question if the backend is unreachable, so the demo never deadlocks on
-// network errors.
 async function fetchQuestion(
   region: AIRegion,
   sessionId: string
 ): Promise<{ question: string; conceptTag: string }> {
-  try {
-    const res = await fetch(`${BACKEND_URL}/gate/question`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        session_id: sessionId,
-        checkpoint_id: region.id,
-        code: region.text,
-        file: basename(region.file),
-        language: inferLanguage(region.file),
-        start_line: region.startLine,
-        end_line: region.endLine,
-      }),
-    });
-    if (!res.ok) {
-      throw new Error(`question failed (${res.status})`);
-    }
-    const json = (await res.json()) as QuestionResponse;
-    return {
-      question: json.question,
-      conceptTag: json.concept_tag || 'design choice',
-    };
-  } catch (err) {
-    return {
-      question: `In ${basename(region.file)}:${region.startLine + 1}-${
-        region.endLine + 1
-      }, why this approach instead of an obvious alternative? Name one edge case the code handles. (offline fallback — backend unreachable: ${
-        err instanceof Error ? err.message : String(err)
-      })`,
-      conceptTag: 'design choice',
-    };
+  const res = await fetch(`${BACKEND_URL}/gate/question`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      session_id: sessionId,
+      checkpoint_id: region.id,
+      code: region.text,
+      file: basename(region.file),
+      language: inferLanguage(region.file),
+      start_line: region.startLine,
+      end_line: region.endLine,
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`question failed (${res.status})`);
   }
+  const json = (await res.json()) as QuestionResponse;
+  return {
+    question: json.question,
+    conceptTag: json.concept_tag || 'design choice',
+  };
+}
+
+function fetchQuestionUntilReady(
+  region: AIRegion,
+  sessionId: string,
+  attempt = 0
+): void {
+  void fetchQuestion(region, sessionId)
+    .then(({ question, conceptTag }) => {
+      attachQuestion(region.id, question, conceptTag);
+    })
+    .catch((err) => {
+      console.warn('[VibeCheck] question fetch failed:', err);
+      if (!hasCheckpointThread(region.id)) {
+        return;
+      }
+      const delay = Math.min(10_000, 1_000 + attempt * 1_000);
+      setTimeout(() => fetchQuestionUntilReady(region, sessionId, attempt + 1), delay);
+    });
 }
 
 /**
@@ -130,19 +136,7 @@ export async function launchCheckpointForRegion(
       endLine: region.endLine,
       code: region.text,
     });
-    // Fire and forget — when the question lands, splice it into the seed.
-    fetchQuestion(region, sessionId)
-      .then(({ question, conceptTag }) => {
-        attachQuestion(region.id, question, conceptTag);
-      })
-      .catch((err) => {
-        console.warn('[VibeCheck] question fetch failed:', err);
-        attachQuestion(
-          region.id,
-          `In ${basename(region.file)}, why this approach? Name one edge case it handles. (offline)`,
-          'design choice'
-        );
-      });
+    fetchQuestionUntilReady(region, sessionId);
     return;
   }
 

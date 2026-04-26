@@ -39,6 +39,10 @@ const threadsByRegion = new Map<string, vscode.CommentThread>();
 const metaByThread = new WeakMap<vscode.CommentThread, ThreadMeta>();
 let mostRecentThread: vscode.CommentThread | undefined;
 
+export function hasCheckpointThread(regionId: string): boolean {
+  return threadsByRegion.has(regionId);
+}
+
 export function activateCommentThreads(context: vscode.ExtensionContext): void {
   controller = vscode.comments.createCommentController(
     'vibecheck',
@@ -58,15 +62,15 @@ export function activateCommentThreads(context: vscode.ExtensionContext): void {
     ),
     vscode.commands.registerCommand(
       'vibecheck.overrideThread',
-      async (thread?: vscode.CommentThread) => {
-        await handleOverride(thread);
+      async (arg?: ThreadCommandArg) => {
+        await handleOverride(arg);
       }
     ),
     vscode.commands.registerCommand(
       'vibecheck.dismissThread',
-      async (thread?: vscode.CommentThread) => {
+      async (arg?: ThreadCommandArg) => {
         // Dismiss without answering counts toward vibing.
-        const target = resolveThread(thread);
+        const target = resolveThread(arg);
         if (!target) return;
         const meta = metaByThread.get(target);
         if (meta) {
@@ -75,15 +79,15 @@ export function activateCommentThreads(context: vscode.ExtensionContext): void {
             region_id: meta.regionId,
             source: 'thread_dismiss',
           });
-          threadsByRegion.delete(meta.regionId);
+          removeThreadMeta(target, meta.regionId);
         }
         target.dispose();
       }
     ),
     vscode.commands.registerCommand(
       'vibecheck.skipThread',
-      async (thread?: vscode.CommentThread) => {
-        await handleSkip(thread);
+      async (arg?: ThreadCommandArg) => {
+        await handleSkip(arg);
       }
     )
   );
@@ -188,6 +192,12 @@ interface PendingSpinner {
   intervalId: ReturnType<typeof setInterval>;
 }
 const pendingSpinners = new Map<string, PendingSpinner>();
+
+type ThreadCommandArg =
+  | vscode.CommentThread
+  | vscode.CommentReply
+  | { thread?: vscode.CommentThread }
+  | undefined;
 
 /**
  * Create a thread immediately with an animated circular spinner seed
@@ -485,11 +495,21 @@ async function handleSubmitAnswer(reply: vscode.CommentReply): Promise<void> {
   // question.
 }
 
-function resolveThread(
-  thread: vscode.CommentThread | undefined
-): vscode.CommentThread | undefined {
+function resolveThread(arg: ThreadCommandArg): vscode.CommentThread | undefined {
+  const replyThread = arg && 'thread' in arg ? arg.thread : undefined;
+  if (replyThread) {
+    return replyThread;
+  }
+  const thread = arg as vscode.CommentThread | undefined;
   if (thread) {
-    return thread;
+    if (metaByThread.has(thread)) {
+      return thread;
+    }
+    for (const candidate of threadsByRegion.values()) {
+      if (candidate === thread) {
+        return candidate;
+      }
+    }
   }
   if (mostRecentThread) {
     return mostRecentThread;
@@ -500,8 +520,15 @@ function resolveThread(
   return undefined;
 }
 
-async function handleOverride(thread: vscode.CommentThread | undefined): Promise<void> {
-  thread = resolveThread(thread);
+function removeThreadMeta(thread: vscode.CommentThread, regionId: string): void {
+  threadsByRegion.delete(regionId);
+  if (mostRecentThread === thread) {
+    mostRecentThread = undefined;
+  }
+}
+
+async function handleOverride(arg: ThreadCommandArg): Promise<void> {
+  const thread = resolveThread(arg);
   if (!thread) {
     vscode.window.showWarningMessage(
       'VibeCheck: no active checkpoint thread found to override.'
@@ -537,7 +564,10 @@ async function handleOverride(thread: vscode.CommentThread | undefined): Promise
   // Override counts as engagement (user read & rejected) → learning bucket.
   void recordEvent('checkpoint_overridden', {
     region_id: meta.regionId,
+    source: 'thread_override',
   });
+  removeThreadMeta(thread, meta.regionId);
+  thread.dispose();
 }
 
 /**
@@ -545,8 +575,8 @@ async function handleOverride(thread: vscode.CommentThread | undefined): Promise
  * unverified, and the event counts against the "vibing" gauge. Use
  * this when you want to defer the question, not reject the code.
  */
-async function handleSkip(thread: vscode.CommentThread | undefined): Promise<void> {
-  thread = resolveThread(thread);
+async function handleSkip(arg: ThreadCommandArg): Promise<void> {
+  const thread = resolveThread(arg);
   if (!thread) {
     vscode.window.showWarningMessage(
       'VibeCheck: no active checkpoint thread found to skip.'
@@ -560,7 +590,7 @@ async function handleSkip(thread: vscode.CommentThread | undefined): Promise<voi
       region_id: meta.regionId,
       source: 'thread_skip',
     });
-    threadsByRegion.delete(meta.regionId);
+    removeThreadMeta(thread, meta.regionId);
   }
   thread.dispose();
 }

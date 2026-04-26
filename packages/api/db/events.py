@@ -143,7 +143,6 @@ async def summarize(user_id: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001
         _warn_once("aggregate", "summary", exc)
 
-    generated = counts.get("ai_generated", 0)
     passed = counts.get("answer_passed", 0)
     overridden = counts.get("checkpoint_overridden", 0)
     dismissed = counts.get("checkpoint_dismissed", 0)
@@ -152,6 +151,7 @@ async def summarize(user_id: str) -> dict[str, Any]:
     # Engagement = answered (passed) OR consciously overrode.
     # Dismissed / skipped don't count as engagement.
     reviewed = passed + overridden
+    generated = max(counts.get("ai_generated", 0), reviewed + dismissed)
 
     # Vibing = generations that slipped through without engagement.
     vibing = max(generated - reviewed, 0)

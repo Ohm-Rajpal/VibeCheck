@@ -67,39 +67,42 @@ function inferLanguage(filePath) {
 function basename(filePath) {
     return filePath.split('/').pop() ?? filePath;
 }
-// Fetch a Gemma-generated question for one region. Falls back to a generic
-// question if the backend is unreachable, so the demo never deadlocks on
-// network errors.
 async function fetchQuestion(region, sessionId) {
-    try {
-        const res = await fetch(`${BACKEND_URL}/gate/question`, {
-            method: 'POST',
-            headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({
-                session_id: sessionId,
-                checkpoint_id: region.id,
-                code: region.text,
-                file: basename(region.file),
-                language: inferLanguage(region.file),
-                start_line: region.startLine,
-                end_line: region.endLine,
-            }),
-        });
-        if (!res.ok) {
-            throw new Error(`question failed (${res.status})`);
+    const res = await fetch(`${BACKEND_URL}/gate/question`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+            session_id: sessionId,
+            checkpoint_id: region.id,
+            code: region.text,
+            file: basename(region.file),
+            language: inferLanguage(region.file),
+            start_line: region.startLine,
+            end_line: region.endLine,
+        }),
+    });
+    if (!res.ok) {
+        throw new Error(`question failed (${res.status})`);
+    }
+    const json = (await res.json());
+    return {
+        question: json.question,
+        conceptTag: json.concept_tag || 'design choice',
+    };
+}
+function fetchQuestionUntilReady(region, sessionId, attempt = 0) {
+    void fetchQuestion(region, sessionId)
+        .then(({ question, conceptTag }) => {
+        (0, commentThreads_1.attachQuestion)(region.id, question, conceptTag);
+    })
+        .catch((err) => {
+        console.warn('[VibeCheck] question fetch failed:', err);
+        if (!(0, commentThreads_1.hasCheckpointThread)(region.id)) {
+            return;
         }
-        const json = (await res.json());
-        return {
-            question: json.question,
-            conceptTag: json.concept_tag || 'design choice',
-        };
-    }
-    catch (err) {
-        return {
-            question: `In ${basename(region.file)}:${region.startLine + 1}-${region.endLine + 1}, why this approach instead of an obvious alternative? Name one edge case the code handles. (offline fallback — backend unreachable: ${err instanceof Error ? err.message : String(err)})`,
-            conceptTag: 'design choice',
-        };
-    }
+        const delay = Math.min(10000, 1000 + attempt * 1000);
+        setTimeout(() => fetchQuestionUntilReady(region, sessionId, attempt + 1), delay);
+    });
 }
 /**
  * High-level helper used by toast / status bar / HTTP /checkpoint route.
@@ -132,15 +135,7 @@ async function launchCheckpointForRegion(context, region, trigger, sessionId = r
             endLine: region.endLine,
             code: region.text,
         });
-        // Fire and forget — when the question lands, splice it into the seed.
-        fetchQuestion(region, sessionId)
-            .then(({ question, conceptTag }) => {
-            (0, commentThreads_1.attachQuestion)(region.id, question, conceptTag);
-        })
-            .catch((err) => {
-            console.warn('[VibeCheck] question fetch failed:', err);
-            (0, commentThreads_1.attachQuestion)(region.id, `In ${basename(region.file)}, why this approach? Name one edge case it handles. (offline)`, 'design choice');
-        });
+        fetchQuestionUntilReady(region, sessionId);
         return;
     }
     // ── Native + webview modes: BLOCKING (they can't render without the

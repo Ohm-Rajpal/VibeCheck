@@ -53,6 +53,25 @@ code --install-extension vibecheck-0.0.1.vsix
 
 Then reload any open VSCode window: `Ctrl+Shift+P` (or `Cmd+Shift+P` on macOS) → **`Developer: Reload Window`**.
 
+### Start the API backend
+
+The extension calls the local Python API at `http://localhost:8000` for Gemma question generation, answer grading, and metrics. Start it before demoing checkpoints:
+
+```bash
+npm run start:api
+```
+
+This is the single startup command for the backend. It delegates to `scripts/start-api.sh`, which creates `packages/api/.venv` if needed, installs Python dependencies only when `packages/api/requirements.txt` changes, and runs `uvicorn packages.api.main:app --reload --host 0.0.0.0 --port 8000` from the repo root.
+
+If port `8000` is already serving VibeCheck, the command exits successfully and prints the health URLs. If port `8000` is occupied by a broken process, stop that process and rerun `npm run start:api`.
+
+Verify the API is live:
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/metrics/health
+```
+
 ### Verify it's working
 
 1. Look at the bottom-right status bar — it should show `🟣 VibeCheck: clean`.
