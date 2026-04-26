@@ -37,6 +37,7 @@ exports.openCheckpointPanel = openCheckpointPanel;
 const vscode = __importStar(require("vscode"));
 const fs = __importStar(require("fs"));
 const path = __importStar(require("path"));
+const regionTracker_1 = require("../detection/regionTracker");
 let currentPanel;
 function openCheckpointPanel(context, sessionId, questions, trigger) {
     if (currentPanel) {
@@ -58,7 +59,7 @@ function handleMessage(msg) {
     switch (msg.type) {
         case 'PASS':
             vscode.window.showInformationMessage(`✅ VibeCheck: marked ${msg.checkpointId} as understood.`);
-            // TODO: mark related AIRegion(s) as verified in regionTracker.
+            regionTracker_1.regionTracker.markStatus([msg.checkpointId], 'passed');
             break;
         case 'OVERRIDE':
             vscode.window.showWarningMessage(`⚠️ VibeCheck overridden: ${msg.reason}`);

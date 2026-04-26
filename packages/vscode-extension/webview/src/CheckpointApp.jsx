@@ -37,6 +37,8 @@ const MOCK = {
   ],
 };
 
+const BACKEND_URL = window.__VIBECHECK_BACKEND_URL ?? 'http://127.0.0.1:8000';
+
 function triggerLabel(t) {
   if (t === 'pre_commit') return 'Pre-commit Check';
   if (t === 'devin_pr') return 'Devin PR Review';
@@ -54,7 +56,7 @@ export default function CheckpointApp({ init }) {
   const question = data.questions[0]; // single-question flow per the design spec
   const sessionId = data.sessionId;
   const trigger = data.trigger;
-  const checkpointId = `${sessionId}-0`;
+  const checkpointId = question.checkpoint_id ?? question.id ?? `${sessionId}-0`;
 
   const [mode, setMode] = useState('text'); // 'text' | 'audio'
   const [textAnswer, setTextAnswer] = useState('');
@@ -64,6 +66,9 @@ export default function CheckpointApp({ init }) {
   const [submittedPayload, setSubmittedPayload] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [score, setScore] = useState(null);
+  const [submitState, setSubmitState] = useState('idle'); // 'idle' | 'verifying' | 'speaking'
+  const [submitError, setSubmitError] = useState('');
 
   // Listen for SCORE messages from the extension host (currently we transition
   // to the success view immediately on submit; SCORE is captured but unused).
@@ -75,19 +80,86 @@ export default function CheckpointApp({ init }) {
     return () => window.removeEventListener('message', onMessage);
   }, []);
 
-  function submit() {
+  async function submit() {
+    setSubmitError('');
     if (mode === 'text') {
       const value = textAnswer.trim();
       if (!value) return;
-      send({ type: 'SUBMIT_TRANSCRIPT', sessionId, checkpointId, transcript: value });
-      setSubmittedPayload({ type: 'text', value });
+      await verifyAndSpeak(value, { type: 'text', value });
     } else {
       const value = audioTranscript.trim();
       if (recState !== 'complete' || !value) return;
-      send({ type: 'SUBMIT_TRANSCRIPT', sessionId, checkpointId, transcript: value });
-      setSubmittedPayload({ type: 'audio', value, duration });
+      await verifyAndSpeak(value, { type: 'audio', value, duration });
     }
-    setSubmitted(true);
+  }
+
+  async function verifyAndSpeak(transcript, payload) {
+    try {
+      setSubmitState('verifying');
+      const response = await fetch(`${BACKEND_URL}/gate/verify`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          session_id: sessionId,
+          checkpoint_id: checkpointId,
+          transcript,
+          question: question.question,
+          file: question.file,
+          diff_excerpt:
+            question.diff_excerpt ??
+            question.text ??
+            question.code_context ??
+            question.question,
+        }),
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Could not verify the answer.');
+      }
+
+      const result = await response.json();
+      setScore(result.score);
+      setSubmittedPayload(payload);
+      setSubmitted(true);
+
+      if (result.score?.passed) {
+        send({ type: 'PASS', sessionId, checkpointId });
+      }
+
+      const spoken = result.score?.spoken_response || result.score?.feedback;
+      if (spoken) {
+        setSubmitState('speaking');
+        try {
+          await playSpokenResponse(spoken);
+        } catch (err) {
+          console.warn('[VibeCheck] spoken feedback failed', err);
+        }
+      }
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : 'Could not submit answer.');
+    } finally {
+      setSubmitState('idle');
+    }
+  }
+
+  async function playSpokenResponse(text) {
+    const response = await fetch(`${BACKEND_URL}/gate/speak/stream`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text }),
+    });
+
+    if (!response.ok) {
+      const detail = await response.text();
+      throw new Error(detail || 'Could not generate spoken feedback.');
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    await audio.play();
   }
 
   function reset() {
@@ -98,6 +170,9 @@ export default function CheckpointApp({ init }) {
     setRecState('ready');
     setDuration(0);
     setCopied(false);
+    setScore(null);
+    setSubmitState('idle');
+    setSubmitError('');
   }
 
   function copyAnswer() {
@@ -132,12 +207,15 @@ export default function CheckpointApp({ init }) {
             audioTranscript={audioTranscript}
             setAudioTranscript={setAudioTranscript}
             canSubmit={canSubmit}
+            submitState={submitState}
+            submitError={submitError}
             onSubmit={submit}
           />
         ) : (
           <SuccessView
             question={question}
             payload={submittedPayload}
+            score={score}
             onAnother={reset}
             onCopy={copyAnswer}
             copied={copied}
@@ -192,6 +270,8 @@ function FormView({
   audioTranscript,
   setAudioTranscript,
   canSubmit,
+  submitState,
+  submitError,
   onSubmit,
 }) {
   return (
@@ -258,8 +338,18 @@ function FormView({
         </section>
 
         <section className="vc-section vc-submit-section">
-          <button className="vc-submit-btn" onClick={onSubmit} disabled={!canSubmit}>
-            🚀 Submit Answer <Send size={16} />
+          {submitError && <p className="vc-rec-error">{submitError}</p>}
+          <button
+            className="vc-submit-btn"
+            onClick={onSubmit}
+            disabled={!canSubmit || submitState !== 'idle'}
+          >
+            {submitState === 'verifying'
+              ? 'Checking answer...'
+              : submitState === 'speaking'
+              ? 'Playing feedback...'
+              : '🚀 Submit Answer'}{' '}
+            <Send size={16} />
           </button>
         </section>
       </div>
@@ -284,6 +374,9 @@ function TextInput({ value, onChange }) {
 
 function AudioRecorder({ state, setState, duration, setDuration, transcript, setTranscript }) {
   const recognitionRef = useRef(null);
+  const recorderRef = useRef(null);
+  const streamRef = useRef(null);
+  const chunksRef = useRef([]);
   const timerRef = useRef(null);
   const finalRef = useRef('');
   const [interim, setInterim] = useState('');
@@ -301,6 +394,10 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
 
   async function start() {
     setError('');
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) {
+      setError('Microphone recording is not available in this webview. Use text mode instead.');
+      return;
+    }
 
     // Step 1: explicitly request mic permission via getUserMedia. Without this
     // the SpeechRecognition API often fails immediately with `not-allowed` in
@@ -327,7 +424,34 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
 
     // We don't actually need to keep the stream open — SpeechRecognition will
     // open its own. Stop the tracks immediately to release the indicator.
-    stream.getTracks().forEach((t) => t.stop());
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm') ? 'audio/webm' : '';
+    const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    chunksRef.current = [];
+    streamRef.current = stream;
+    recorderRef.current = recorder;
+
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunksRef.current.push(event.data);
+    };
+    recorder.onstop = () => {
+      clearInterval(timerRef.current);
+      stream.getTracks().forEach((track) => track.stop());
+      streamRef.current = null;
+      recorderRef.current = null;
+      const audio = new Blob(chunksRef.current, {
+        type: recorder.mimeType || 'audio/webm',
+      });
+      void transcribe(audio);
+    };
+
+    recorder.start();
+    finalRef.current = '';
+    setTranscript('');
+    setInterim('');
+    setDuration(0);
+    setState('recording');
+    timerRef.current = setInterval(() => setDuration((d) => d + 1), 1000);
+    return;
 
     // Step 2: start the speech recognition engine.
     const recognition = getRecognition();
@@ -396,9 +520,62 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
   }
 
   function stop() {
+    const recorder = recorderRef.current;
+    if (recorder && recorder.state !== 'inactive') {
+      setState('transcribing');
+      recorder.stop();
+      return;
+    }
     try {
       recognitionRef.current?.stop();
     } catch {}
+  }
+
+  async function transcribe(audio) {
+    if (!audio.size) {
+      setError('No audio was captured. Try recording again.');
+      setState('ready');
+      return;
+    }
+
+    try {
+      const form = new FormData();
+      form.append('audio', audio, 'answer.webm');
+      const response = await fetch(`${BACKEND_URL}/gate/transcribe`, {
+        method: 'POST',
+        body: form,
+      });
+
+      if (!response.ok) {
+        const detail = await response.text();
+        throw new Error(detail || 'Could not transcribe the recording.');
+      }
+
+      const payload = await response.json();
+      if (!payload.text?.trim()) {
+        throw new Error('The transcription came back empty.');
+      }
+
+      finalRef.current = payload.text.trim();
+      setInterim('');
+      setTranscript(payload.text.trim());
+      setState('complete');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not transcribe the recording.');
+      setState('ready');
+    }
+  }
+
+  async function uploadAudio(event) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+
+    setError('');
+    setTranscript('');
+    setDuration(0);
+    setState('transcribing');
+    await transcribe(file);
   }
 
   function rerec() {
@@ -413,6 +590,7 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
   useEffect(
     () => () => {
       clearInterval(timerRef.current);
+      streamRef.current?.getTracks().forEach((track) => track.stop());
       try {
         recognitionRef.current?.abort();
       } catch {}
@@ -435,13 +613,23 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
           <button className="vc-glow-btn start" onClick={start} type="button">
             <Mic size={16} /> Start recording
           </button>
+          <label className="vc-glow-btn rerec">
+            Upload audio
+            <input
+              accept="audio/*"
+              onChange={uploadAudio}
+              style={{ display: 'none' }}
+              type="file"
+            />
+          </label>
         </div>
       </div>
     );
   }
 
-  if (state === 'recording') {
+  if (state === 'recording' || state === 'transcribing') {
     const finalText = finalRef.current;
+    const isTranscribing = state === 'transcribing';
     return (
       <div className="vc-rec-box vc-rec-recording vc-fade-in">
         <div className="vc-rec-dots">
@@ -455,7 +643,9 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
         </p>
 
         <div className="vc-live-transcript">
-          {finalText || interim ? (
+          {isTranscribing ? (
+            <p className="vc-live-placeholder">Sending audio to the backend...</p>
+          ) : finalText || interim ? (
             <p className="vc-live-text">
               <span className="vc-live-final">{finalText}</span>
               {interim && (
@@ -473,7 +663,7 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
         {error && <p className="vc-rec-error">{error}</p>}
 
         <div className="vc-rec-actions">
-          <button className="vc-glow-btn stop" onClick={stop} type="button">
+          <button className="vc-glow-btn stop" onClick={stop} type="button" disabled={isTranscribing}>
             <Square size={14} fill="#fff" /> Stop
           </button>
         </div>
@@ -513,7 +703,7 @@ function AudioRecorder({ state, setState, duration, setDuration, transcript, set
   );
 }
 
-function SuccessView({ question, payload, onAnother, onCopy, copied }) {
+function SuccessView({ question, payload, score, onAnother, onCopy, copied }) {
   return (
     <div className="vc-success-card vc-slide-up">
       <header className="vc-success-header">
@@ -533,6 +723,21 @@ function SuccessView({ question, payload, onAnother, onCopy, copied }) {
           <div className="vc-review-label">Question</div>
           <p className="vc-review-content">{question.question}</p>
         </div>
+
+        {score && (
+          <div className="vc-review-block">
+            <div className="vc-review-label">
+              {score.passed ? 'Passed' : 'Needs follow-up'} · Overall{' '}
+              {Math.round((score.overall ?? 0) * 100)}%
+            </div>
+            <p className="vc-review-content">{score.feedback}</p>
+            {score.follow_up_question && (
+              <p className="vc-review-content" style={{ marginTop: 8 }}>
+                Follow-up: {score.follow_up_question}
+              </p>
+            )}
+          </div>
+        )}
 
         <div className="vc-review-block">
           <div className="vc-review-label">

@@ -11,7 +11,7 @@ from ..services.checkpoints import (
     evaluate_transcript,
     lookup_question,
 )
-from ..services.elevenlabs import synthesize_speech, transcribe_audio
+from ..services.elevenlabs import stream_speech, synthesize_speech, transcribe_audio
 
 router = APIRouter()
 
@@ -39,6 +39,12 @@ async def transcribe_answer(audio: UploadFile = File(...)) -> TranscribeResponse
 async def speak_feedback(req: SpeakRequest) -> Response:
     """Generate playable feedback audio from evaluator text."""
     return await synthesize_speech(req.text, req.voice_id)
+
+
+@router.post("/speak/stream")
+async def stream_feedback(req: SpeakRequest) -> Response:
+    """Stream playable feedback audio from evaluator text."""
+    return await stream_speech(req.text, req.voice_id)
 
 
 @router.post("/agent-commit")
