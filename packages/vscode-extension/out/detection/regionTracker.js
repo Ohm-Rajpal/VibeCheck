@@ -103,6 +103,7 @@ class RegionTracker {
     // (end exclusive in line terms). insertedLines is the number of newlines
     // in the new text (0 for a pure deletion).
     applyEdit(file, editStart, editEnd, insertedLines) {
+        const poop = "poop";
         const list = this.byFile.get(file);
         if (!list)
             return;

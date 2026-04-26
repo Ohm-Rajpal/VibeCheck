@@ -47,13 +47,17 @@ const CHECKPOINT_PORT = Number(process.env.CHECKPOINT_PORT ?? 3456);
 function activate(context) {
     // 1. Local HTTP server: receives notifications from pre-commit hook + Devin webhook.
     const server = http.createServer((req, res) => {
-        console.log('[VibeCheck] server request', req.method, req.url);
         if (req.method === 'POST' && req.url === '/checkpoint') {
             let body = '';
             req.on('data', (chunk) => (body += chunk));
             req.on('end', () => {
                 try {
                     const { session_id, questions, trigger } = JSON.parse(body);
+                    if (trigger !== 'pre_commit') {
+                        res.writeHead(202);
+                        res.end('ignored non pre_commit trigger');
+                        return;
+                    }
                     (0, panel_1.openCheckpointPanel)(context, session_id, questions, trigger);
                     res.writeHead(200);
                     res.end('ok');
@@ -127,15 +131,7 @@ function activate(context) {
         const pos = editor.selection.active;
         await editor.edit((builder) => builder.insert(pos, sample));
     }), vscode.commands.registerCommand('vibecheck.openCheckpoint', () => {
-        const regions = regionTracker_1.regionTracker.getUnverified();
-        const questions = regions.map((r) => ({
-            question: `Walk me through ${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}.`,
-            concept_tag: 'general comprehension',
-            code_context: `${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}`,
-            file: r.file.split('/').pop() ?? r.file,
-        }));
-        (0, panel_1.openCheckpointPanel)(context, `manual-${Date.now()}`, questions.length ? questions : [], 'pre_commit');
-        (0, panel_1.openCheckpointPanel)(context, 'manual', [], 'pre_commit');
+        vscode.window.showInformationMessage('VibeCheck: Checkpoint panel content is shown only when pre-commit triggers a checkpoint.');
     }), vscode.commands.registerCommand('vibecheck.analyzeGitDiff', () => {
         const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
         if (!workspaceRoot) {
@@ -144,8 +140,7 @@ function activate(context) {
         }
         try {
             const questions = (0, gitDiffAst_1.generateQuestionsFromGitDiff)(workspaceRoot);
-            (0, panel_1.openCheckpointPanel)(context, `git-diff-${Date.now()}`, questions, 'pre_commit');
-            vscode.window.showInformationMessage(`VibeCheck: Generated ${questions.length} AST-based question(s) from git diff.`);
+            vscode.window.showInformationMessage(`VibeCheck: Generated ${questions.length} AST-based question(s) from git diff. Panel output is shown only during pre-commit.`);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : 'Unknown analysis error';

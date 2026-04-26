@@ -88,6 +88,7 @@ class RegionTracker {
     editEnd: number,
     insertedLines: number
   ): void {
+    const poop = "poop";
     const list = this.byFile.get(file);
     if (!list) return;
     const lineDelta = insertedLines - (editEnd - editStart);

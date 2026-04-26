@@ -4,6 +4,16 @@ import * as path from 'path';
 
 export type CheckpointTrigger = 'velocity' | 'pre_commit' | 'devin_pr';
 
+type PanelQuestion = {
+  changedFunction?: string;
+  changedFunctionFile?: string;
+  changedFunctionSource?: string;
+  calledBy?: string[];
+  estimatedImpact?: 'Low' | 'Medium' | 'Medium-High' | 'High';
+  question?: string;
+  whyThisMatters?: string;
+};
+
 let currentPanel: vscode.WebviewPanel | undefined;
 
 export function openCheckpointPanel(
@@ -38,17 +48,26 @@ function renderHtml(
   questions: unknown[],
   trigger: CheckpointTrigger
 ): string {
-  const safeQuestions = escapeHtml(JSON.stringify(questions, null, 2));
+  const items = normalizeQuestions(questions);
+  const totalChanged = items.length;
+  const impact = estimateOverallImpact(items);
+  const cards = items
+    .map((item, index) => renderQuestionCard(item, index))
+    .join('\n');
+
   return `<!doctype html>
-<html><body style="font-family:system-ui;padding:24px;color:#eee;background:#1e1e1e">
-  <h2>🧠 VibeCheck — ${trigger}</h2>
-  <p>Session: <code>${sessionId}</code></p>
-  <div style="display:flex;gap:8px;margin-bottom:12px">
+<html>
+<body style="font-family:system-ui;padding:24px;color:#eee;background:#1e1e1e;line-height:1.45">
+  <h1 style="margin-bottom:4px">VibeCheck Pre-Commit Checkpoint</h1>
+  <p style="margin-top:0;color:#cfd8dc">Session: <code>${escapeHtml(sessionId)}</code></p>
+  <p style="margin:4px 0 2px 0;font-size:16px;font-weight:600">We found ${totalChanged} changed function${totalChanged === 1 ? '' : 's'} that may affect your codebase.</p>
+  <p style="margin:0 0 12px 0;color:#cfd8dc">Estimated impact: <strong>${impact}</strong></p>
+  <div style="display:flex;gap:8px;margin-bottom:16px">
     <button id="passBtn" style="padding:8px 12px;background:#2e7d32;color:#fff;border:none;border-radius:6px;cursor:pointer">Mark Pass</button>
     <button id="failBtn" style="padding:8px 12px;background:#b71c1c;color:#fff;border:none;border-radius:6px;cursor:pointer">Mark Fail</button>
   </div>
   <p id="status" style="color:#ccc"></p>
-  <pre>${safeQuestions}</pre>
+  <div id="cards">${cards || '<p style="color:#ccc">No changed functions found in current staged diff.</p>'}</div>
   <script>
     const vscode = acquireVsCodeApi();
     const status = document.getElementById('status');
@@ -60,13 +79,50 @@ function renderHtml(
       vscode.postMessage({ type: 'fail' });
       status.textContent = 'Sent FAIL signal...';
     });
+    document.querySelectorAll('[data-action]').forEach((button) => {
+      button.addEventListener('click', (event) => {
+        const target = event.currentTarget;
+        if (!target) return;
+        const action = target.getAttribute('data-action');
+        const changedFunction = target.getAttribute('data-function') || '';
+        vscode.postMessage({ type: action, changedFunction });
+        if (action === 'answer') status.textContent = 'Marked ' + changedFunction + ' for answer.';
+        if (action === 'skip') status.textContent = 'Skipped ' + changedFunction + '.';
+        if (action === 'explain') status.textContent = 'Explain request sent for ' + changedFunction + '.';
+      });
+    });
   </script>
-</body></html>`;
+</body>
+</html>`;
 }
 
 function handlePanelMessage(message: unknown) {
-  const msg = (message ?? {}) as { type?: string };
-  if (msg.type !== 'pass' && msg.type !== 'fail') {
+  const msg = (message ?? {}) as { type?: string; changedFunction?: string };
+  if (
+    msg.type !== 'pass' &&
+    msg.type !== 'fail' &&
+    msg.type !== 'answer' &&
+    msg.type !== 'skip' &&
+    msg.type !== 'explain'
+  ) {
+    return;
+  }
+  if (msg.type === 'answer') {
+    vscode.window.showInformationMessage(
+      `VibeCheck: answer selected for ${msg.changedFunction ?? 'function'}.`
+    );
+    return;
+  }
+  if (msg.type === 'skip') {
+    vscode.window.showWarningMessage(
+      `VibeCheck: skipped ${msg.changedFunction ?? 'function'}.`
+    );
+    return;
+  }
+  if (msg.type === 'explain') {
+    vscode.window.showInformationMessage(
+      `VibeCheck: explain requested for ${msg.changedFunction ?? 'function'}.`
+    );
     return;
   }
 
@@ -106,5 +162,59 @@ function escapeHtml(value: string): string {
   return value
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;');
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function normalizeQuestions(questions: unknown[]): PanelQuestion[] {
+  return questions.map((question) => {
+    const item = (question ?? {}) as PanelQuestion;
+    return {
+      changedFunction: item.changedFunction ?? 'Unknown function',
+      changedFunctionFile: item.changedFunctionFile ?? 'unknown file',
+      changedFunctionSource: item.changedFunctionSource ?? '',
+      calledBy: Array.isArray(item.calledBy) ? item.calledBy : [],
+      estimatedImpact: item.estimatedImpact ?? 'Medium',
+      question: item.question ?? 'What changed here and what could break downstream?',
+      whyThisMatters:
+        item.whyThisMatters ?? 'This changed function may affect behavior outside the edited lines.',
+    };
+  });
+}
+
+function estimateOverallImpact(items: PanelQuestion[]): string {
+  if (items.some((item) => item.estimatedImpact === 'High')) {
+    return 'High';
+  }
+  if (items.some((item) => item.estimatedImpact === 'Medium-High')) {
+    return 'Medium-High';
+  }
+  if (items.some((item) => item.estimatedImpact === 'Medium')) {
+    return 'Medium';
+  }
+  return 'Low';
+}
+
+function renderQuestionCard(item: PanelQuestion, index: number): string {
+  const usedByLines = (item.calledBy ?? [])
+    .slice(0, 5)
+    .map((caller) => `<li><code>${escapeHtml(caller)}</code></li>`)
+    .join('');
+
+  const changedFunction = escapeHtml(item.changedFunction ?? 'Unknown function');
+  return `
+  <section style="border:1px solid #37474f;border-radius:8px;padding:14px;margin:0 0 14px 0;background:#222b31">
+    <p style="margin:0 0 8px 0"><strong>Changed function:</strong> <code>${escapeHtml(item.changedFunction ?? 'Unknown function')}</code></p>
+    <p style="margin:0 0 4px 0;color:#cfd8dc"><strong>Defined in:</strong> <code>${escapeHtml(item.changedFunctionFile ?? 'unknown file')}</code></p>
+    <p style="margin:0 0 6px 0"><strong>Used by:</strong></p>
+    <ul style="margin:0 0 10px 16px;padding:0">${usedByLines || '<li><em>No callers detected</em></li>'}</ul>
+    <p style="margin:0 0 4px 0"><strong>Question:</strong> ${escapeHtml(item.question ?? '')}</p>
+    <p style="margin:0 0 10px 0;color:#b0bec5"><strong>Why this matters:</strong> ${escapeHtml(item.whyThisMatters ?? '')}</p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button data-action="answer" data-function="${changedFunction}" data-index="${index}" style="padding:6px 10px;background:#1565c0;color:#fff;border:none;border-radius:6px;cursor:pointer">Answer</button>
+      <button data-action="skip" data-function="${changedFunction}" data-index="${index}" style="padding:6px 10px;background:#546e7a;color:#fff;border:none;border-radius:6px;cursor:pointer">Skip</button>
+      <button data-action="explain" data-function="${changedFunction}" data-index="${index}" style="padding:6px 10px;background:#6a1b9a;color:#fff;border:none;border-radius:6px;cursor:pointer">Explain this code</button>
+    </div>
+  </section>`;
 }

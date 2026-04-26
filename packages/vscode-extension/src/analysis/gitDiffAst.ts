@@ -28,11 +28,34 @@ type ChangedFunction = {
 };
 
 type Question = {
+  changedFunction: string;
+  changedFunctionFile: string;
+  beforeSource: string;
+  afterSource: string;
+  changedFunctionSource: string;
+  calledBy: string[];
+  estimatedImpact: 'Low' | 'Medium' | 'Medium-High' | 'High';
+  llmContext: {
+    seed: {
+      name: string;
+      file: string;
+      source: string;
+    };
+    related: Array<{
+      relation: 'called_by' | 'calls';
+      name: string;
+      file: string;
+      source: string;
+    }>;
+  };
   question: string;
-  why: string;
+  whyThisMatters: string;
 };
 
 const MAX_QUESTIONS = 10;
+const MAX_GRAPH_DEPTH = 2;
+const MAX_GRAPH_NODES = 60;
+const MAX_RELATION_ITEMS = 5;
 
 export function generateQuestionsFromGitDiff(
   workspaceRoot: string,
@@ -62,17 +85,102 @@ export function generateQuestionsFromGitDiff(
   if (changedFunctions.length === 0) {
     return [
       {
+        changedFunction: '<diff>',
+        changedFunctionFile: '<unknown>',
+        beforeSource: '',
+        afterSource: '',
+        changedFunctionSource: '',
+        calledBy: [],
+        estimatedImpact: 'Low',
+        llmContext: {
+          seed: { name: '<diff>', file: '<unknown>', source: '' },
+          related: [],
+        },
         question:
-          'Which behavior changed in this diff, and what tests prove the old behavior is still safe?',
-        why: 'No function-level AST matches were found in the changed hunks, so provide a behavioral summary.',
+          'If the staged diff extraction is incomplete, what behavior change could ship without being questioned?',
+        whyThisMatters:
+          'No function-level AST matches were found in changed hunks, so reasoning about the overall commit intent is the safest fallback.',
       },
     ];
   }
 
-  return changedFunctions.slice(0, MAX_QUESTIONS).map((fn) => ({
-    question: `You changed \`${fn.functionName}\` in \`${fn.filePath}\`. Which callers depend on it and what behavior changed?${formatCallerSuffix(fn.callers)}`,
-    why: `The changed lines intersect this function (lines ${fn.startLine}-${fn.endLine}).`,
-  }));
+  const tsConfigPath = path.join(workspaceRoot, 'packages', 'vscode-extension', 'tsconfig.json');
+  const project = fs.existsSync(tsConfigPath)
+    ? buildTypeScriptProject(workspaceRoot, tsConfigPath)
+    : undefined;
+
+  const questions: Question[] = [];
+  for (const changedFunction of changedFunctions) {
+    if (questions.length >= MAX_QUESTIONS) {
+      break;
+    }
+
+    if (!project || !isTsOrJsFile(changedFunction.filePath)) {
+      questions.push({
+        changedFunction: changedFunction.functionName,
+        changedFunctionFile: changedFunction.filePath,
+        beforeSource: '',
+        afterSource: '',
+        changedFunctionSource: '',
+        calledBy: simplifyCallerLabels(changedFunction.callers ?? []),
+        estimatedImpact: estimateImpactLevel(changedFunction.callers?.length ?? 0, 0),
+        llmContext: {
+          seed: {
+            name: changedFunction.functionName,
+            file: changedFunction.filePath,
+            source: '',
+          },
+          related: [],
+        },
+        question: buildLearningQuestion(changedFunction.functionName),
+        whyThisMatters: buildWhyThisMatters(changedFunction),
+      });
+      continue;
+    }
+
+    const declarationNode = findChangedFunctionDeclaration(
+      project,
+      workspaceRoot,
+      changedFunction
+    );
+    if (!declarationNode) {
+      questions.push({
+        changedFunction: changedFunction.functionName,
+        changedFunctionFile: changedFunction.filePath,
+        beforeSource: '',
+        afterSource: '',
+        changedFunctionSource: '',
+        calledBy: simplifyCallerLabels(changedFunction.callers ?? []),
+        estimatedImpact: estimateImpactLevel(changedFunction.callers?.length ?? 0, 0),
+        llmContext: {
+          seed: {
+            name: changedFunction.functionName,
+            file: changedFunction.filePath,
+            source: '',
+          },
+          related: [],
+        },
+        question: buildLearningQuestion(changedFunction.functionName),
+        whyThisMatters: `${buildWhyThisMatters(changedFunction)} Symbol resolution was unavailable, so this prompt focuses on behavior and contracts.`,
+      });
+      continue;
+    }
+
+    const generated = generateAdaptiveQuestionForChangedFunction(
+      workspaceRoot,
+      changedFunction,
+      declarationNode,
+      options?.staged ?? false
+    );
+    for (const question of generated) {
+      if (questions.length >= MAX_QUESTIONS) {
+        break;
+      }
+      questions.push(question);
+    }
+  }
+
+  return dedupeQuestions(questions).slice(0, MAX_QUESTIONS);
 }
 
 function parseChangedFiles(workspaceRoot: string, staged: boolean): ChangedFile[] {
@@ -325,11 +433,7 @@ function findTsOrJsCallersForFunctions(
     return new Map();
   }
 
-  const project = new Project({
-    tsConfigFilePath: tsConfigPath,
-    skipAddingFilesFromTsConfig: false,
-  });
-  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'shared', '**/*.ts')); // FLAG: What does this do? Does this only allow ts fiels to be analyzed?
+  const project = buildTypeScriptProject(workspaceRoot, tsConfigPath);
 
   const result = new Map<string, string[]>();
   for (const changedFunction of changedFunctions) {
@@ -344,6 +448,20 @@ function findTsOrJsCallersForFunctions(
     result.set(key, callers);
   }
   return result;
+}
+
+function buildTypeScriptProject(workspaceRoot: string, tsConfigPath: string): Project {
+  const project = new Project({
+    tsConfigFilePath: tsConfigPath,
+    skipAddingFilesFromTsConfig: false,
+  });
+  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'shared', '**/*.ts'));
+  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'shared', '**/*.tsx'));
+  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'packages', '**', 'src', '**/*.ts'));
+  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'packages', '**', 'src', '**/*.tsx'));
+  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'packages', '**', 'src', '**/*.js'));
+  project.addSourceFilesAtPaths(path.join(workspaceRoot, 'packages', '**', 'src', '**/*.jsx'));
+  return project;
 }
 
 function changedFunctionKey(changedFunction: ChangedFunction): string {
@@ -442,6 +560,225 @@ function findCallersForDeclaration(
   return Array.from(callers).sort();
 }
 
+function generateAdaptiveQuestionForChangedFunction(
+  workspaceRoot: string,
+  changedFunction: ChangedFunction,
+  declarationNode: MorphNode,
+  staged: boolean
+): Question[] {
+  const impact = buildImpactGraph(workspaceRoot, declarationNode);
+  const callerContexts = findRelatedFunctionContexts(
+    workspaceRoot,
+    declarationNode,
+    'called_by'
+  );
+  const calleeContexts = findRelatedFunctionContexts(
+    workspaceRoot,
+    declarationNode,
+    'calls'
+  );
+  const calledBy =
+    callerContexts.length > 0
+      ? callerContexts
+          .slice(0, MAX_RELATION_ITEMS)
+          .map((item) => `${item.name} (${item.file})`)
+      : impact.upstream.length
+        ? simplifyCallerLabelsWithPath(impact.upstream.slice(0, MAX_RELATION_ITEMS))
+        : simplifyCallerLabels(changedFunction.callers ?? []);
+  const estimatedImpact = estimateImpactLevel(
+    impact.upstream.length,
+    impact.downstream.length
+  );
+  const related = [...callerContexts, ...calleeContexts].slice(0, MAX_RELATION_ITEMS * 2);
+  const afterSource = declarationNode.getText();
+  const beforeSource = resolveBeforeFunctionSource(
+    workspaceRoot,
+    changedFunction,
+    staged
+  );
+
+  return [
+    {
+      changedFunction: changedFunction.functionName,
+      changedFunctionFile: changedFunction.filePath,
+      beforeSource,
+      afterSource,
+      changedFunctionSource: afterSource,
+      calledBy,
+      estimatedImpact,
+      llmContext: {
+        seed: {
+          name: changedFunction.functionName,
+          file: changedFunction.filePath,
+          source: afterSource,
+        },
+        related,
+      },
+      question: buildLearningQuestion(changedFunction.functionName),
+      whyThisMatters: buildWhyThisMatters(changedFunction),
+    },
+  ];
+}
+
+function buildImpactGraph(
+  workspaceRoot: string,
+  seedDeclaration: MorphNode
+): { upstream: string[]; downstream: string[] } {
+  const upstream = traverseCallGraph(workspaceRoot, [seedDeclaration], 'upstream');
+  const downstream = traverseCallGraph(workspaceRoot, [seedDeclaration], 'downstream');
+  return { upstream, downstream };
+}
+
+function traverseCallGraph(
+  workspaceRoot: string,
+  startNodes: MorphNode[],
+  direction: 'upstream' | 'downstream'
+): string[] {
+  const visited = new Set<string>();
+  const labels = new Set<string>();
+  const queue: Array<{ node: MorphNode; depth: number }> = startNodes.map((node) => ({
+    node,
+    depth: 0,
+  }));
+  for (const startNode of startNodes) {
+    visited.add(symbolKey(startNode));
+  }
+
+  while (queue.length > 0 && visited.size < MAX_GRAPH_NODES) {
+    const current = queue.shift();
+    if (!current) {
+      break;
+    }
+    if (current.depth >= MAX_GRAPH_DEPTH) {
+      continue;
+    }
+
+    const adjacent =
+      direction === 'upstream'
+        ? findCallerDeclarations(current.node)
+        : findCalleeDeclarations(current.node);
+
+    for (const nextNode of adjacent) {
+      const key = symbolKey(nextNode);
+      if (visited.has(key)) {
+        continue;
+      }
+      visited.add(key);
+      labels.add(formatFunctionLabel(workspaceRoot, nextNode));
+      queue.push({ node: nextNode, depth: current.depth + 1 });
+      if (visited.size >= MAX_GRAPH_NODES) {
+        break;
+      }
+    }
+  }
+
+  return Array.from(labels).sort();
+}
+
+function findCallerDeclarations(declarationNode: MorphNode): MorphNode[] {
+  const callers = new Map<string, MorphNode>();
+  const references = getReferencesForDeclaration(declarationNode);
+
+  for (const reference of references) {
+    for (const refEntry of reference.getReferences()) {
+      const refNode = refEntry.getNode();
+      if (!isCallLikeReference(refNode)) {
+        continue;
+      }
+      if (isSelfReferenceCall(declarationNode, refNode)) {
+        continue;
+      }
+      const enclosing = refNode.getFirstAncestor((ancestor) => isSupportedFunctionNode(ancestor));
+      if (!enclosing) {
+        continue;
+      }
+      callers.set(symbolKey(enclosing), enclosing);
+    }
+  }
+
+  return Array.from(callers.values());
+}
+
+function findCalleeDeclarations(declarationNode: MorphNode): MorphNode[] {
+  const callees = new Map<string, MorphNode>();
+  const callExpressions = declarationNode
+    .getDescendants()
+    .filter((descendant) => MorphNode.isCallExpression(descendant));
+
+  for (const callExpression of callExpressions) {
+    const expression = callExpression.getExpression();
+    const symbol = expression.getSymbol();
+    const declarations = symbol?.getDeclarations() ?? [];
+    for (const candidate of declarations) {
+      const resolved = normalizeDeclarationNode(candidate);
+      if (!resolved || !isSupportedFunctionNode(resolved)) {
+        continue;
+      }
+      if (isSameFunctionNode(resolved, declarationNode)) {
+        continue;
+      }
+      callees.set(symbolKey(resolved), resolved);
+    }
+  }
+
+  return Array.from(callees.values());
+}
+
+function normalizeDeclarationNode(node: MorphNode): MorphNode | undefined {
+  if (isSupportedFunctionNode(node)) {
+    return node;
+  }
+
+  if (MorphNode.isVariableDeclaration(node)) {
+    const initializer = node.getInitializer();
+    if (initializer && (MorphNode.isArrowFunction(initializer) || MorphNode.isFunctionExpression(initializer))) {
+      return initializer;
+    }
+  }
+
+  return undefined;
+}
+
+function symbolKey(node: MorphNode): string {
+  const sourcePath = node.getSourceFile().getFilePath();
+  const start = node.getStartLineNumber();
+  const end = node.getEndLineNumber();
+  const name = getMorphFunctionName(node);
+  return `${sourcePath}:${start}:${end}:${name}`;
+}
+
+function formatFunctionLabel(workspaceRoot: string, node: MorphNode): string {
+  const relativePath = path
+    .relative(workspaceRoot, node.getSourceFile().getFilePath())
+    .replace(/\\/g, '/');
+  if (relativePath.includes('/node_modules/')) {
+    return '';
+  }
+  return `${getMorphFunctionName(node)} (${relativePath}:${node.getStartLineNumber()})`;
+}
+
+function formatRelationSuffix(prefix: string, values: string[]): string {
+  if (values.length === 0) {
+    return '';
+  }
+  return ` ${prefix}: ${values.join(', ')}.`;
+}
+
+function isSelfReferenceCall(declarationNode: MorphNode, referenceNode: MorphNode): boolean {
+  return (
+    referenceNode.getSourceFile().getFilePath() === declarationNode.getSourceFile().getFilePath() &&
+    referenceNode.getStartLineNumber() === declarationNode.getStartLineNumber()
+  );
+}
+
+function isSameFunctionNode(a: MorphNode, b: MorphNode): boolean {
+  return (
+    a.getSourceFile().getFilePath() === b.getSourceFile().getFilePath() &&
+    a.getStartLineNumber() === b.getStartLineNumber() &&
+    a.getEndLineNumber() === b.getEndLineNumber()
+  );
+}
+
 function getReferencesForDeclaration(declarationNode: MorphNode): ReferencedSymbol[] {
   if (MorphNode.isFunctionDeclaration(declarationNode)) {
     const nameNode = declarationNode.getNameNode();
@@ -487,13 +824,190 @@ function findEnclosingFunctionName(node: MorphNode): string | undefined {
   return getMorphFunctionName(enclosing);
 }
 
-function formatCallerSuffix(callers: string[] | undefined): string {
-  if (!callers || callers.length === 0) {
-    return '';
+function dedupeQuestions(questions: Question[]): Question[] {
+  const deduped: Question[] = [];
+  const seen = new Set<string>();
+
+  for (const question of questions) {
+    const key = `${question.changedFunction}::${question.question}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(question);
   }
-  return ` Callers found: ${callers.slice(0, 6).join(', ')}.`;
+
+  return deduped;
 }
 
 function intersects(aStart: number, aEnd: number, bStart: number, bEnd: number): boolean {
   return aStart <= bEnd && bStart <= aEnd;
+}
+
+function buildLearningQuestion(functionName: string): string {
+  return `Walk through how \`${functionName}\` handles changed inputs. If this function misses a staged case, what downstream behavior would be incorrect?`;
+}
+
+function buildWhyThisMatters(changedFunction: ChangedFunction): string {
+  return `This function is directly changed in \`${changedFunction.filePath}\` (lines ${changedFunction.startLine}-${changedFunction.endLine}) and controls behavior that VibeCheck evaluates before commit.`;
+}
+
+function simplifyCallerLabels(callers: string[]): string[] {
+  const simplified = callers
+    .map((label) => label.split(' (')[0]?.trim() ?? label.trim())
+    .filter((name) => Boolean(name) && name !== '<module>');
+  return Array.from(new Set(simplified)).slice(0, MAX_RELATION_ITEMS);
+}
+
+function simplifyCallerLabelsWithPath(callers: string[]): string[] {
+  const simplified = callers
+    .map((label) => {
+      const match = label.match(/^(.+?) \((.+?):\d+\)$/);
+      if (match) {
+        return `${match[1]} (${match[2]})`;
+      }
+      return label.trim();
+    })
+    .filter((value) => Boolean(value) && !value.startsWith('<module>'));
+  return Array.from(new Set(simplified)).slice(0, MAX_RELATION_ITEMS);
+}
+
+function findRelatedFunctionContexts(
+  workspaceRoot: string,
+  declarationNode: MorphNode,
+  relation: 'called_by' | 'calls'
+): Array<{ relation: 'called_by' | 'calls'; name: string; file: string; source: string }> {
+  const nodes =
+    relation === 'called_by'
+      ? findCallerDeclarations(declarationNode)
+      : findCalleeDeclarations(declarationNode);
+  const seen = new Set<string>();
+  const results: Array<{
+    relation: 'called_by' | 'calls';
+    name: string;
+    file: string;
+    source: string;
+  }> = [];
+
+  for (const node of nodes) {
+    const relativePath = path
+      .relative(workspaceRoot, node.getSourceFile().getFilePath())
+      .replace(/\\/g, '/');
+    if (relativePath.includes('/node_modules/')) {
+      continue;
+    }
+    const name = getMorphFunctionName(node);
+    const key = `${relation}:${name}:${relativePath}:${node.getStartLineNumber()}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    results.push({
+      relation,
+      name: formatCallerName(name, relativePath),
+      file: relativePath,
+      source: truncateSource(node.getText(), 2400),
+    });
+    if (results.length >= MAX_RELATION_ITEMS * 2) {
+      break;
+    }
+  }
+
+  return results;
+}
+
+function truncateSource(source: string, maxChars: number): string {
+  if (source.length <= maxChars) {
+    return source;
+  }
+  return `${source.slice(0, maxChars)}\n/* ...truncated for context size... */`;
+}
+
+function formatCallerName(name: string, relativeFilePath: string): string {
+  if (name === 'anonymous function expression' && relativeFilePath.endsWith('extension.ts')) {
+    return 'extension.ts pre-commit flow';
+  }
+  return name;
+}
+
+function estimateImpactLevel(
+  upstreamCount: number,
+  downstreamCount: number
+): Question['estimatedImpact'] {
+  if (upstreamCount >= 4 || downstreamCount >= 8) {
+    return 'High';
+  }
+  if (upstreamCount >= 2 || downstreamCount >= 4) {
+    return 'Medium-High';
+  }
+  if (upstreamCount >= 1 || downstreamCount >= 1) {
+    return 'Medium';
+  }
+  return 'Low';
+}
+
+function resolveBeforeFunctionSource(
+  workspaceRoot: string,
+  changedFunction: ChangedFunction,
+  staged: boolean
+): string {
+  if (!isTsOrJsFile(changedFunction.filePath)) {
+    return '';
+  }
+
+  const beforeRef = staged ? `HEAD:${changedFunction.filePath}` : `:${changedFunction.filePath}`;
+  const beforeFileText = readGitBlob(workspaceRoot, beforeRef);
+  if (!beforeFileText) {
+    return '';
+  }
+
+  return (
+    findFunctionSourceInText(
+      beforeFileText,
+      changedFunction.filePath,
+      changedFunction.functionName
+    ) ?? ''
+  );
+}
+
+function readGitBlob(workspaceRoot: string, ref: string): string | undefined {
+  try {
+    return execFileSync('git', ['show', ref], {
+      cwd: workspaceRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+function findFunctionSourceInText(
+  fileText: string,
+  filePath: string,
+  functionName: string
+): string | undefined {
+  const sourceFile = ts.createSourceFile(
+    filePath,
+    fileText,
+    ts.ScriptTarget.Latest,
+    true,
+    scriptKindFromPath(filePath)
+  );
+  let result: string | undefined;
+
+  const visit = (node: ts.Node) => {
+    if (result) {
+      return;
+    }
+    const fn = toFunctionNode(node);
+    if (fn?.name === functionName) {
+      result = node.getText(sourceFile);
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+
+  visit(sourceFile);
+  return result;
 }
