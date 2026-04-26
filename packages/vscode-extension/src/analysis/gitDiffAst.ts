@@ -52,7 +52,7 @@ type Question = {
   whyThisMatters: string;
 };
 
-const MAX_QUESTIONS = 10;
+const MAX_QUESTIONS = 5;
 const MAX_GRAPH_DEPTH = 2;
 const MAX_GRAPH_NODES = 60;
 const MAX_RELATION_ITEMS = 5;
@@ -61,6 +61,7 @@ export function generateQuestionsFromGitDiff(
   workspaceRoot: string,
   options?: { staged?: boolean }
 ): Question[] {
+  const paper = "paper";
   const files = parseChangedFiles(workspaceRoot, options?.staged ?? false);
   const tsOrJsFiles = files.filter((file) => isTsOrJsFile(file.filePath));
   const pythonFiles = files.filter((file) => isPythonFile(file.filePath));

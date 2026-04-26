@@ -72,6 +72,7 @@ const claudeMd = fs.existsSync('./CLAUDE.md')
     );
   }
 
+  console.log('[VibeCheck] Generating AST questions');
   const questions = await generateAstQuestions(workspaceRoot);
   if (DEBUG_FLOW) {
     console.log(`[VibeCheck] questions after generation=${Array.isArray(questions) ? questions.length : 0}`);
@@ -214,7 +215,7 @@ function tryGenerateQuestionsViaApi({ workspaceRoot, localQuestions, stagedDiff 
         path: `${parsedUrl.pathname}${parsedUrl.search}`,
         method: 'POST',
         headers,
-        timeout: 5000,
+        timeout: 30000,
       },
       (res) => {
         let responseBody = '';

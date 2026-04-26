@@ -97,14 +97,19 @@ async def generate_questions_with_llm(
             print("[VibeCheck] generate_questions_with_llm: payload is None/empty")
         return []
 
-    generated = payload.get("questions") if isinstance(payload, dict) else None
+    if isinstance(payload, list):
+        generated = payload
+    elif isinstance(payload, dict):
+        generated = payload.get("questions")
+    else:
+        generated = None
     if not isinstance(generated, list):
         if DEBUG_QUESTION_GEN:
             print("[VibeCheck] Question generation fallback: Gemini response missing questions[]")
         if DEBUG_FLOW:
             print(
                 "[VibeCheck] generate_questions_with_llm: payload keys="
-                f"{list(payload.keys()) if isinstance(payload, dict) else '<non-dict>'}"
+                f"{list(payload.keys()) if isinstance(payload, dict) else f'<{type(payload).__name__}>'}"
             )
         return []
 

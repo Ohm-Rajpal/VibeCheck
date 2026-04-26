@@ -2,12 +2,12 @@
 import json
 import os
 import re
-from typing import Optional
+from typing import Any, Optional
 
 import httpx
 from fastapi import HTTPException
 
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemma-4-26b-a4b-it")
 GEMINI_GENERATE_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/"
     f"{GEMINI_MODEL}:generateContent"
@@ -17,7 +17,7 @@ DEBUG_GEMINI_RESPONSE = os.getenv("VIBECHECK_DEBUG_GEMINI_RESPONSE", "0") == "1"
 DEBUG_FLOW = os.getenv("VIBECHECK_DEBUG_FLOW", "0") == "1"
 
 
-async def call_gemini_json(system: str, prompt: str) -> Optional[dict]:
+async def call_gemini_json(system: str, prompt: str) -> Optional[Any]:
     api_key = os.getenv("GEMINI_API_KEY")
     if not api_key:
         if DEBUG_FLOW:
@@ -92,11 +92,18 @@ async def call_gemini_json(system: str, prompt: str) -> Optional[dict]:
     return parsed
 
 
-def extract_json_object(text: str) -> Optional[dict]:
+def extract_json_object(text: str) -> Optional[Any]:
     try:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
+
+    array_match = re.search(r"\[.*\]", text, flags=re.DOTALL)
+    if array_match:
+        try:
+            return json.loads(array_match.group(0))
+        except json.JSONDecodeError:
+            pass
 
     match = re.search(r"\{.*\}", text, flags=re.DOTALL)
     if not match:
