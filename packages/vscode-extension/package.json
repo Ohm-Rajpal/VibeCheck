@@ -47,12 +47,12 @@
         {
           "command": "vibecheck.submitAnswer",
           "group": "inline@1",
-          "when": "commentController == vibecheck && commentThread == vibecheck-unresolved"
+          "when": "commentController == vibecheck && (commentThread == vibecheck-unresolved || commentThread == vibecheck-override-pending)"
         },
         {
           "command": "vibecheck.skipThread",
           "group": "inline@2",
-          "when": "commentController == vibecheck && commentThread == vibecheck-unresolved"
+          "when": "commentController == vibecheck && (commentThread == vibecheck-unresolved || commentThread == vibecheck-override-pending)"
         },
         {
           "command": "vibecheck.overrideThread",

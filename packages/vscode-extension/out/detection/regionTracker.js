@@ -72,6 +72,14 @@ class RegionTracker {
         }
         return out;
     }
+    getById(id) {
+        for (const list of this.byFile.values()) {
+            for (const r of list)
+                if (r.id === id)
+                    return r;
+        }
+        return undefined;
+    }
     getByBurst(burstId) {
         const out = [];
         for (const list of this.byFile.values()) {

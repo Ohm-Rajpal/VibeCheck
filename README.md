@@ -17,6 +17,35 @@ AI agents generate code faster than humans can understand it. Code passes CI, lo
 
 Skeleton + working Layer 1 detection. See `packages/vscode-extension/src/detection/` for the multi-signal logic. Open the `VibeCheck` Output Channel in the Extension Dev Host to watch detection decisions in real time.
 
+## Run VibeCheck — TL;DR
+
+VibeCheck is **two processes**. Both must be running for the demo to work end-to-end. **Run them in this order:**
+
+| # | Command | What it does | When to rerun |
+|---|---|---|---|
+| 1 | `npm run update:extension` | Compiles the TS extension, packages a `.vsix`, and installs it into every detected editor (Windsurf, VS Code, Cursor, …). | **Every time you edit extension code.** Then **reload the editor window** (`Ctrl+Shift+P` → `Developer: Reload Window`). |
+| 2 | `npm run start:api` | Starts the Python FastAPI backend on `localhost:8000` (Gemma questions, grading, metrics). | Once per session. Hot-reloads on Python edits. |
+
+> **Important:** `npm run update:extension` does **not** start the backend. `npm run start:api` does **not** install the extension. They are independent — you need both.
+
+### Day-to-day dev loop
+
+```bash
+# Terminal 1 — install the extension first, then reload your editor:
+#   Ctrl+Shift+P → Developer: Reload Window
+npm run update:extension
+
+# Terminal 2 — backend (leave running for the rest of the session)
+npm run start:api
+```
+
+Whenever you edit extension TypeScript, rerun `npm run update:extension` and reload the window. The backend keeps hot-reloading on its own.
+
+The `update:extension` script lives at `scripts/update-editor-extension.sh`.
+The `start:api` script lives at `scripts/start-api.sh`.
+
+---
+
 ## Install (Linux / macOS)
 
 ### Prerequisites

@@ -33,8 +33,16 @@ export interface VibeSummary {
   overridden: number;
   dismissed: number;
   vibing_count: number;
+  // Three gauges that partition the AI-generated regions and ALWAYS
+  // sum to exactly 100% (when generated > 0):
+  //   vibing  = ignored / dismissed / still pending
+  //   learning = passed comprehension check
+  //   cooking = override + suggestion (collaborated with the agent)
+  // Rounding remainder is absorbed into vibing so the user-facing
+  // numbers never look like 99% or 101%.
   vibing_pct: number;
   learning_pct: number;
+  cooking_pct: number;
 }
 
 type SummaryListener = (s: VibeSummary) => void;
@@ -87,6 +95,7 @@ function emptySummary(): VibeSummary {
     vibing_count: 0,
     vibing_pct: 0,
     learning_pct: 0,
+    cooking_pct: 0,
   };
 }
 
@@ -94,8 +103,21 @@ function normalizeSummary(s: VibeSummary): VibeSummary {
   const reviewed = s.passed + s.overridden;
   const generated = Math.max(s.generated, reviewed + s.dismissed);
   const vibing_count = Math.max(generated - reviewed, 0);
-  const vibing_pct = generated ? Math.round((100 * vibing_count) / generated) : 0;
-  const learning_pct = generated ? 100 - vibing_pct : 0;
+
+  // Three-way partition. We round learning + cooking down (Math.round)
+  // and let vibing absorb whatever remainder is left so the trio sums
+  // to exactly 100. Without the absorption you can get 100 = 33+33+33
+  // showing as 99% in the UI.
+  const learning_pct = generated
+    ? Math.round((100 * s.passed) / generated)
+    : 0;
+  const cooking_pct = generated
+    ? Math.round((100 * s.overridden) / generated)
+    : 0;
+  const vibing_pct = generated
+    ? Math.max(0, 100 - learning_pct - cooking_pct)
+    : 0;
+
   const first_try_rate_pct = generated
     ? Math.round((100 * s.passed_first_try) / generated)
     : 0;
@@ -106,6 +128,7 @@ function normalizeSummary(s: VibeSummary): VibeSummary {
     vibing_count,
     vibing_pct,
     learning_pct,
+    cooking_pct,
     first_try_rate_pct,
   };
 }

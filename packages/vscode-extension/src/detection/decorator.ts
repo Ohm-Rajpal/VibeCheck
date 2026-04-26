@@ -77,4 +77,6 @@ function refresh(editor: vscode.TextEditor) {
   editor.setDecorations(unverifiedDeco, ranges('unverified'));
   editor.setDecorations(passedDeco, ranges('passed'));
   editor.setDecorations(overriddenDeco, ranges('overridden'));
+  // 'skipped' regions are intentionally NOT decorated — the tracker still
+  // remembers them for analytics, but we don't paint anything in the editor.
 }

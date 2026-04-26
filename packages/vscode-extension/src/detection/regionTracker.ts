@@ -11,7 +11,7 @@ export interface AIRegion {
   endLine: number;       // 0-indexed, inclusive
   text: string;          // the inserted text (for question generation)
   generatedAt: number;   // ms epoch
-  status: 'unverified' | 'passed' | 'overridden';
+  status: 'unverified' | 'passed' | 'overridden' | 'skipped';
 }
 
 type Listener = (file: string) => void;
@@ -48,6 +48,13 @@ class RegionTracker {
       for (const r of list) if (r.status === 'unverified') out.push(r);
     }
     return out;
+  }
+
+  getById(id: string): AIRegion | undefined {
+    for (const list of this.byFile.values()) {
+      for (const r of list) if (r.id === id) return r;
+    }
+    return undefined;
   }
 
   getByBurst(burstId: string): AIRegion[] {

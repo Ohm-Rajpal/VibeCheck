@@ -120,6 +120,7 @@ async function createCheckpointThread(input) {
         code: input.code,
         fileShort: shortName(input.file),
         attempt: 0,
+        mode: 'comprehension',
     });
     void (0, recorder_1.recordEvent)('checkpoint_opened', {
         region_id: input.regionId,
@@ -179,6 +180,7 @@ async function createPendingCheckpointThread(input) {
         code: input.code,
         fileShort: shortName(input.file),
         attempt: 0,
+        mode: 'comprehension',
     });
     // Record the open event the moment the thread appears, not when the
     // question arrives — so a user who dismisses during the spinner still
@@ -298,6 +300,19 @@ async function handleSubmitAnswer(reply) {
         return;
     }
     const text = reply.text.trim();
+    // Override mode: the question comment was swapped for an override
+    // prompt. Whatever the user typed is treated as their feedback to
+    // Cascade, regardless of length — but it MUST contain real content.
+    // Empty / whitespace-only submissions are blocked so cooking% can't
+    // be farmed by clicking Override + Submit with no actual suggestion.
+    if (meta.mode === 'override') {
+        if (text.trim().length === 0) {
+            vscode.window.showWarningMessage('VibeCheck: type what the code should do instead, or click Skip to cancel.');
+            return;
+        }
+        await executeOverride(thread, meta, text);
+        return;
+    }
     if (text.length < 10) {
         vscode.window.showWarningMessage('VibeCheck: type a real explanation (at least ~10 characters).');
         return;
@@ -330,6 +345,11 @@ async function handleSubmitAnswer(reply) {
         contextValue: 'vibecheck-grading',
     };
     thread.comments = [...thread.comments, userComment, gradingComment];
+    // Force-clear the reply textarea. VSCode does NOT reliably auto-clear
+    // it during long-running async commands, so we toggle `canReply` which
+    // makes VSCode tear down + recreate the reply input (empty). The flicker
+    // is imperceptible and the grading comment keeps the user oriented.
+    clearReplyInput(thread);
     // 3. POST to /gate/verify.
     let score;
     try {
@@ -393,6 +413,22 @@ async function handleSubmitAnswer(reply) {
     // their answer and resubmit. The graded comment includes the follow-up
     // question.
 }
+/**
+ * Force-clear the reply textarea on a thread by briefly flipping
+ * `canReply` off and on. There's no public API to set the draft text
+ * directly, but toggling `canReply` causes VSCode to dispose and
+ * recreate the reply input — which always renders empty. We restore
+ * `canReply` on the next microtask so the action group buttons return.
+ */
+function clearReplyInput(thread) {
+    const previous = thread.canReply;
+    thread.canReply = false;
+    // Use queueMicrotask so VSCode applies the canReply=false state
+    // (tearing down the input) before we flip it back on.
+    queueMicrotask(() => {
+        thread.canReply = previous;
+    });
+}
 function resolveThread(arg) {
     const replyThread = arg && 'thread' in arg ? arg.thread : undefined;
     if (replyThread) {
@@ -423,6 +459,28 @@ function removeThreadMeta(thread, regionId) {
         mostRecentThread = undefined;
     }
 }
+/**
+ * Override flow (two-step, in-thread):
+ *
+ *   STEP 1 — `handleOverride` (this fn): user clicks the Override button.
+ *   We swap the question comment in-place for an override prompt
+ *   ("What should this code do instead? …") and flip the thread's
+ *   metadata to `mode: 'override'`. The reply textarea + Submit button
+ *   are reused — no top-of-window InputBox.
+ *
+ *   STEP 2 — `executeOverride` (called from `handleSubmitAnswer` when
+ *   `meta.mode === 'override'`): the user types their feedback in the
+ *   reply box and clicks Submit. We delete the AI-authored snippet,
+ *   forward the exact text to Cascade (auto-paste from clipboard
+ *   best-effort), record the event, and dispose the thread.
+ *
+ * Rationale: a "raw" override (just mark + dispose) trains the engineer
+ * to dismiss checkpoints reflexively. Forcing them to articulate WHAT
+ * should change converts the override into a structured handoff to the
+ * agent — which is exactly the human-AI collaboration loop we're pitching.
+ * Keeping the prompt inline with the thread (rather than a top InputBox)
+ * keeps the UI quiet and lets users edit/refine in a multi-line textarea.
+ */
 async function handleOverride(arg) {
     const thread = resolveThread(arg);
     if (!thread) {
@@ -430,35 +488,302 @@ async function handleOverride(arg) {
         return;
     }
     const meta = metaByThread.get(thread);
-    if (meta) {
-        // If user overrides while still pending, stop the spinner first.
-        stopSpinner(meta.regionId);
-    }
     if (!meta) {
         thread.dispose();
         return;
     }
-    const overrideComment = {
-        body: new vscode.MarkdownString('_Region marked as overridden without verification. Use this only when the AI code is wrong and you plan to delete or rewrite it._'),
+    // Already in override mode — no-op so a stray double-click doesn't
+    // re-render the prompt and clobber whatever the user is typing.
+    if (meta.mode === 'override') {
+        return;
+    }
+    // If user overrides while still pending, stop the spinner first so it
+    // doesn't overwrite the override prompt on the next interval tick.
+    stopSpinner(meta.regionId);
+    // Replace the question comment with a clean override prompt. Any user
+    // replies that may have been posted are preserved (we only swap index 0).
+    meta.mode = 'override';
+    const overridePromptComment = {
+        body: buildOverridePromptMarkdown(),
         mode: vscode.CommentMode.Preview,
         author: { name: 'VibeCheck' },
-        contextValue: 'vibecheck-overridden',
-        label: 'overridden',
-        timestamp: new Date(),
+        contextValue: 'vibecheck-override-prompt',
+        label: 'override',
     };
-    thread.comments = [...thread.comments, overrideComment];
-    thread.state = vscode.CommentThreadState.Resolved;
-    thread.contextValue = 'vibecheck-resolved';
-    thread.canReply = false;
-    thread.collapsibleState = vscode.CommentThreadCollapsibleState.Collapsed;
-    regionTracker_1.regionTracker.markStatus([meta.regionId], 'overridden');
-    // Override counts as engagement (user read & rejected) → learning bucket.
+    thread.comments = [overridePromptComment, ...thread.comments.slice(1)];
+    thread.label = 'VibeCheck — override';
+    // Flip the thread's contextValue so the package.json menu `when`
+    // clauses hide the Override button. Submit + Skip stay visible.
+    thread.contextValue = 'vibecheck-override-pending';
+    // Force the reply textarea to render fresh (and empty) so the user
+    // isn't typing on top of a stale comprehension draft.
+    clearReplyInput(thread);
+}
+/**
+ * Step 2 of the override flow. Called from `handleSubmitAnswer` when the
+ * thread's mode is 'override' and the user has typed feedback + clicked
+ * Submit. Deletes the AI-authored snippet, forwards the text to Cascade,
+ * and tears down the thread.
+ */
+async function executeOverride(thread, meta, userReasoning) {
+    // Defense in depth: `handleSubmitAnswer` already gates on non-empty
+    // text, but we re-check here so cooking% can NEVER be awarded for
+    // an empty/whitespace-only override. Bail silently — the calling
+    // path is responsible for any user-facing toast.
+    if (userReasoning.trim().length === 0) {
+        return;
+    }
+    // 1. Look up the FRESH line numbers from the tracker (they may have
+    //    shifted since the thread was created if the user edited above).
+    const region = regionTracker_1.regionTracker.getById(meta.regionId);
+    // 2. Build the structured Cascade prompt BEFORE deleting the code,
+    //    so we can quote the original snippet from the live document
+    //    (more accurate than meta.code, which can drift on later edits
+    //    above the region).
+    const cascadePrompt = buildCascadePrompt({
+        fileShort: meta.fileShort,
+        region,
+        fallbackCode: meta.code,
+        userReasoning,
+    });
+    // 3. Delete the AI-authored snippet from the document. The
+    //    velocityDetector's onDidChangeTextDocument handler will fire
+    //    `applyEdit` + `gcStaleRegions` and remove the region from the
+    //    tracker automatically.
+    if (region) {
+        try {
+            const uri = vscode.Uri.file(region.file);
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const startLine = Math.max(0, region.startLine);
+            const endLine = Math.min(doc.lineCount - 1, region.endLine);
+            const startPos = new vscode.Position(startLine, 0);
+            const endPos = endLine + 1 < doc.lineCount
+                ? new vscode.Position(endLine + 1, 0)
+                : doc.lineAt(endLine).range.end;
+            const edit = new vscode.WorkspaceEdit();
+            edit.delete(uri, new vscode.Range(startPos, endPos));
+            await vscode.workspace.applyEdit(edit);
+        }
+        catch (err) {
+            console.warn('[VibeCheck] override: failed to delete region:', err);
+        }
+    }
+    // 4. Put the structured prompt on the clipboard. This is the
+    //    bulletproof fallback — even if the auto-paste below fails, the
+    //    user can Cmd/Ctrl+V into Cascade.
+    await vscode.env.clipboard.writeText(cascadePrompt);
+    // 5. Open Cascade and best-effort auto-paste the prompt into its input.
+    const result = await tryOpenCascadeWithPrompt(cascadePrompt);
+    // 5. Record + dispose. We DON'T call markStatus('overridden') — the
+    //    deletion above already removed the region via gcStaleRegions, so
+    //    there's nothing left to mark.
     void (0, recorder_1.recordEvent)('checkpoint_overridden', {
         region_id: meta.regionId,
         source: 'thread_override',
+        cascade_opened: result.opened,
+        cascade_pasted: result.pasted,
+        feedback_chars: userReasoning.length,
     });
     removeThreadMeta(thread, meta.regionId);
     thread.dispose();
+    // 6. Toast that reflects what actually happened.
+    if (result.opened && result.pasted) {
+        vscode.window.showInformationMessage('VibeCheck: code removed. Prompt pasted into Cascade — press Enter to send.');
+    }
+    else if (result.opened) {
+        vscode.window.showInformationMessage('VibeCheck: code removed. Cascade opened — paste with Cmd/Ctrl+V, then press Enter.');
+    }
+    else {
+        vscode.window.showInformationMessage('VibeCheck: code removed. Prompt copied to clipboard — open Cascade (Cmd+L / Ctrl+L) and paste.');
+    }
+}
+/**
+ * Best-effort handoff of the user's feedback into Cascade as the next
+ * prompt. The primary command — `windsurf.triggerCascade` ("Start
+ * Cascade Conversation") — was verified by inspecting the bundled
+ * Windsurf extension manifest at
+ *   ~/.windsurf-server/bin/<rev>/extensions/windsurf/package.json
+ *
+ * The handler is implemented inside the closed-source Windsurf binary
+ * and (as of this build) ignores any arguments we pass — it just opens
+ * an empty Cascade conversation. So we do this in two phases:
+ *
+ *   1. Open Cascade. Probe several arg shapes for `windsurf.triggerCascade`
+ *      in case a future build accepts a query, then fall back to
+ *      `workbench.action.chat.open`. The first invocation that doesn't
+ *      throw wins.
+ *
+ *   2. After a short delay (so the chat input has time to mount + grab
+ *      focus), execute `editor.action.clipboardPasteAction` to paste
+ *      the prompt — the caller is responsible for putting the prompt
+ *      on the clipboard BEFORE calling this fn. There's no public
+ *      "submit chat" command, so the user still presses Enter manually.
+ */
+async function tryOpenCascadeWithPrompt(prompt) {
+    const candidates = [
+        // Verified Windsurf command. Try the object-shape first since most
+        // VSCode chat APIs use `{ query }`; fall back to the positional
+        // string in case Windsurf accepts a raw string. The no-args variant
+        // is the documented behavior (just open the panel).
+        { id: 'windsurf.triggerCascade', args: [{ query: prompt, prompt }] },
+        { id: 'windsurf.triggerCascade', args: [prompt] },
+        { id: 'windsurf.triggerCascade', args: [] },
+        // Last-ditch: VSCode's built-in chat opener. If Cascade hijacks the
+        // chat surface in this build, this still routes the prompt to it.
+        { id: 'workbench.action.chat.open', args: [{ query: prompt }] },
+    ];
+    let opened = false;
+    for (const c of candidates) {
+        try {
+            await vscode.commands.executeCommand(c.id, ...c.args);
+            opened = true;
+            break;
+        }
+        catch {
+            // Try the next one.
+        }
+    }
+    if (!opened) {
+        return { opened: false, pasted: false };
+    }
+    // Give Cascade a moment to mount its webview and put focus into the
+    // chat input. 400ms is empirically enough on a warm window without
+    // making the user wait noticeably.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    // Best-effort paste from clipboard into whatever has focus. If
+    // Cascade's input is focused (it usually is right after triggerCascade),
+    // the prompt lands there and the user just hits Enter.
+    let pasted = false;
+    for (const cmd of [
+        'editor.action.clipboardPasteAction',
+        'execPaste',
+        'paste',
+    ]) {
+        try {
+            await vscode.commands.executeCommand(cmd);
+            pasted = true;
+            break;
+        }
+        catch {
+            // Try the next paste variant.
+        }
+    }
+    return { opened, pasted };
+}
+/**
+ * Build the structured prompt that gets sent to Cascade as the next
+ * message when the user overrides a checkpoint. Including the file
+ * path, the AI-authored snippet we're rejecting, AND the user's
+ * reasoning gives Cascade the full context to write a replacement
+ * that addresses the specific complaint, instead of just hearing the
+ * complaint out of nowhere.
+ *
+ * Source of the snippet, in priority order:
+ *   1. The current text of the file at the region's range, if the
+ *      region is still tracked. Most accurate — captures any tweaks
+ *      the user made before clicking Override.
+ *   2. The frozen `meta.code` captured at burst time. Fallback for
+ *      regions that have already been GC'd or moved.
+ */
+function buildCascadePrompt(input) {
+    const { fileShort, region, fallbackCode, userReasoning } = input;
+    // Try to read the live snippet so the prompt reflects exactly what's
+    // about to be deleted, not what was generated minutes ago.
+    let snippet = fallbackCode;
+    let lineRange;
+    if (region) {
+        try {
+            const doc = vscode.workspace.textDocuments.find((d) => d.uri.fsPath === region.file);
+            if (doc) {
+                const startLine = Math.max(0, region.startLine);
+                const endLine = Math.min(doc.lineCount - 1, region.endLine);
+                const range = new vscode.Range(startLine, 0, endLine, doc.lineAt(endLine).range.end.character);
+                snippet = doc.getText(range);
+                lineRange = `${startLine + 1}-${endLine + 1}`;
+            }
+        }
+        catch {
+            // Fall through to the frozen meta.code.
+        }
+    }
+    const lang = languageHintForFile(fileShort);
+    const where = lineRange
+        ? `\`${fileShort}\` (lines ${lineRange})`
+        : `\`${fileShort}\``;
+    const lines = [];
+    lines.push(`I'm rejecting an AI-generated snippet in ${where} and want you to ` +
+        `rewrite it. Here is the snippet I'm removing:`);
+    lines.push('');
+    lines.push('```' + lang);
+    lines.push(snippet.replace(/\n+$/u, ''));
+    lines.push('```');
+    lines.push('');
+    lines.push(`What I want instead:`);
+    lines.push('');
+    lines.push(userReasoning);
+    lines.push('');
+    lines.push(`Please write the replacement code directly into ${where}. Match ` +
+        `the surrounding style and explain the key tradeoff in 1–2 sentences.`);
+    return lines.join('\n');
+}
+/**
+ * Map a filename to a markdown code-fence language tag so Cascade gets
+ * syntax-aware quoting of the snippet. Falls back to no language if
+ * the extension is unknown.
+ */
+function languageHintForFile(fileShort) {
+    const ext = fileShort.split('.').pop()?.toLowerCase() ?? '';
+    const map = {
+        ts: 'ts',
+        tsx: 'tsx',
+        js: 'js',
+        jsx: 'jsx',
+        py: 'python',
+        rs: 'rust',
+        go: 'go',
+        java: 'java',
+        kt: 'kotlin',
+        rb: 'ruby',
+        php: 'php',
+        cs: 'csharp',
+        c: 'c',
+        h: 'c',
+        cpp: 'cpp',
+        hpp: 'cpp',
+        cc: 'cpp',
+        swift: 'swift',
+        sh: 'bash',
+        bash: 'bash',
+        zsh: 'bash',
+        sql: 'sql',
+        json: 'json',
+        yaml: 'yaml',
+        yml: 'yaml',
+        toml: 'toml',
+        md: 'markdown',
+        html: 'html',
+        css: 'css',
+        scss: 'scss',
+    };
+    return map[ext] ?? '';
+}
+/**
+ * Question-comment body shown after the user clicks the Override
+ * button. Replaces the original "Concept: … / What would happen if …"
+ * comprehension question. Plain markdown — no codicons or HTML — so
+ * the comment widget renders crisply across themes.
+ */
+function buildOverridePromptMarkdown() {
+    const md = new vscode.MarkdownString();
+    md.supportHtml = false;
+    md.isTrusted = false;
+    md.appendMarkdown(`**Override** — what should this code do instead?\n\n`);
+    md.appendMarkdown(`Type your replacement instructions in the reply box below and click ` +
+        `**Submit answer** (or press Enter). Your text is sent straight to ` +
+        `Cascade as the next prompt, and the AI-authored snippet above is ` +
+        `deleted.\n\n`);
+    md.appendMarkdown(`_Click **Skip** to cancel and leave the code untouched._`);
+    return md;
 }
 /**
  * Skip the checkpoint without claiming ownership: the region stays
@@ -474,9 +799,19 @@ async function handleSkip(arg) {
     const meta = metaByThread.get(thread);
     if (meta) {
         stopSpinner(meta.regionId);
+        // Mark the region 'skipped' so the decorator stops painting the
+        // yellow "needs check" highlight, but the region itself stays in
+        // the tracker (counts toward the "vibing" gauge / dismissed totals).
+        regionTracker_1.regionTracker.markStatus([meta.regionId], 'skipped');
+        // Distinct source tag for skips that happened AFTER the user
+        // clicked Override but bailed without typing a suggestion. The
+        // event is still `checkpoint_dismissed` (vibing bucket — never
+        // cooking) but the source string makes the abandonment obvious
+        // in analytics.
+        const source = meta.mode === 'override' ? 'thread_override_abandoned' : 'thread_skip';
         void (0, recorder_1.recordEvent)('checkpoint_dismissed', {
             region_id: meta.regionId,
-            source: 'thread_skip',
+            source,
         });
         removeThreadMeta(thread, meta.regionId);
     }
