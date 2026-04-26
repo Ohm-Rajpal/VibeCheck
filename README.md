@@ -20,15 +20,6 @@ Cascade ships with **Plan Mode** and **Write Mode**. VibeCheck adds **Learn Mode
 
 The product surfaces three numbers that mean something (**Vibing**, **Learning**, **Cooking**) so engineers and their managers can watch a real growth curve as accept-blindly behavior gives way to comprehension and engineering pushback.
 
-## Why this fits the Cognition track
-
-| Judging axis | How VibeCheck answers it |
-|---|---|
-| **Impact** | Targets the highest-leverage moment for tech-debt prevention: the second the AI code is written, before it's shipped, reviewed, merged, or forgotten. |
-| **Technical depth** | Multi-signal velocity detection (line-burst + idle-prefix + edit-reason + clipboard-equality), Gemma-powered question generation tuned to *implementation choices* not goals, append-only Mongo event log with snapshot-on-reset, and a discovered Windsurf private command (`windsurf.triggerCascade`) for the Cascade handoff. |
-| **Usability** | Non-blocking toast + inline GitHub-PR-style comment threads. Skip is always one click away. The override flow takes the engineer's complaint and lands them in Cascade with a structured prompt prefilled. |
-| **Creativity** | Frames AI-generated code as something the human must *earn the right to own*, then makes that earning process measurable, low-friction, and genuinely fun. |
-
 ## Architecture (current)
 
 - **Layer 1, in-editor velocity detection** (`packages/vscode-extension`): Windsurf extension watches `onDidChangeTextDocument`, flags AI bursts via a multi-signal heuristic (line burst + idle gap + reason filter + clipboard equality), and triggers a non-blocking comprehension toast.
