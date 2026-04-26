@@ -1,7 +1,8 @@
 """Checkpoint generation, lookup, and answer evaluation."""
 import json
+import os
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import HTTPException
 
@@ -9,10 +10,114 @@ from ..schemas.gate import ComprehensionScore, GeneratedQuestion, VerifyRequest
 from .gemini import call_gemini_json
 
 SESSION_STORE: dict[str, dict[str, GeneratedQuestion]] = {}
+LLM_EXTRA_SYSTEM_INSTRUCTIONS = os.getenv(
+    "VIBECHECK_LLM_EXTRA_SYSTEM_INSTRUCTIONS", ""
+).strip()
+LLM_EXTRA_PROMPT_INSTRUCTIONS = os.getenv(
+    "VIBECHECK_LLM_EXTRA_PROMPT_INSTRUCTIONS", ""
+).strip()
+DEBUG_QUESTION_GEN = os.getenv("VIBECHECK_DEBUG_QUESTION_GEN", "0") == "1"
+DEBUG_FLOW = os.getenv("VIBECHECK_DEBUG_FLOW", "0") == "1"
 
 
 def save_session_questions(session_id: str, questions: List[GeneratedQuestion]) -> None:
     SESSION_STORE[session_id] = {q.checkpoint_id: q for q in questions}
+
+
+async def generate_questions_with_llm(
+    staged_diff: str, local_questions: List[dict]
+) -> List[dict]:
+    baseline = local_questions if isinstance(local_questions, list) else []
+    if DEBUG_FLOW:
+        print(
+            "[VibeCheck] generate_questions_with_llm start: "
+            f"baseline={len(baseline)} stagedDiffChars={len(staged_diff or '')}"
+        )
+    if not baseline:
+        if DEBUG_FLOW:
+            print("[VibeCheck] generate_questions_with_llm: empty baseline, returning []")
+        return []
+
+    system_base = (
+        "You generate high-quality code comprehension questions for developers before commit. "
+        "Use provided function context and diff hunks. Keep wording concrete and actionable. "
+        "Do not copy template text from input. Rewrite question and whyThisMatters per function. "
+        "Return only valid JSON."
+    )
+    system = (
+        f"{system_base}\n\nAdditional system instructions:\n{LLM_EXTRA_SYSTEM_INSTRUCTIONS}"
+        if LLM_EXTRA_SYSTEM_INSTRUCTIONS
+        else system_base
+    )
+    prompt: dict[str, Any] = {
+        "task": "Generate one strong comprehension question per changed function.",
+        "staged_diff": staged_diff,
+        "local_questions": baseline,
+        "required_json_shape": {
+            "questions": [
+                {
+                    "changedFunction": "string",
+                    "changedFunctionFile": "string",
+                    "calledBy": ["string"],
+                    "estimatedImpact": "Low|Medium|Medium-High|High",
+                    "question": "string",
+                    "whyThisMatters": "string",
+                    "llmContext": {
+                        "seed": {
+                            "name": "string",
+                            "file": "string",
+                            "summary": "string",
+                            "changedLines": "string",
+                            "diff": "string",
+                            "snippet": "string",
+                        },
+                        "impactPath": ["string"],
+                        "related": [
+                            {
+                                "relation": "calls|called_by",
+                                "name": "string",
+                                "summary": "string",
+                                "snippet": "string",
+                            }
+                        ],
+                        "changeType": "logic_change|refactor|bugfix|api_contract|other",
+                    },
+                }
+            ]
+        },
+    }
+    if LLM_EXTRA_PROMPT_INSTRUCTIONS:
+        prompt["additional_instructions"] = LLM_EXTRA_PROMPT_INSTRUCTIONS
+
+    payload = await call_gemini_json(system, json.dumps(prompt))
+    if not payload:
+        if DEBUG_QUESTION_GEN:
+            print("[VibeCheck] Question generation fallback: Gemini payload is empty.")
+        if DEBUG_FLOW:
+            print("[VibeCheck] generate_questions_with_llm: payload is None/empty")
+        return []
+
+    generated = payload.get("questions") if isinstance(payload, dict) else None
+    if not isinstance(generated, list):
+        if DEBUG_QUESTION_GEN:
+            print("[VibeCheck] Question generation fallback: Gemini response missing questions[]")
+        if DEBUG_FLOW:
+            print(
+                "[VibeCheck] generate_questions_with_llm: payload keys="
+                f"{list(payload.keys()) if isinstance(payload, dict) else '<non-dict>'}"
+            )
+        return []
+
+    normalized = [normalize_generated_question(item) for item in generated]
+    merged: List[dict] = []
+    for idx, base_item in enumerate(baseline):
+        candidate = normalized[idx] if idx < len(normalized) else {}
+        merged.append(merge_question_fields(base_item, candidate))
+    if DEBUG_QUESTION_GEN:
+        print(
+            f"[VibeCheck] Question generation complete: baseline={len(baseline)} generated={len(generated)} merged={len(merged)}"
+        )
+    return merged
 
 
 async def evaluate_transcript(
@@ -41,6 +146,7 @@ def lookup_question(req: VerifyRequest) -> GeneratedQuestion:
             code_context=req.file or "unknown",
             file=req.file or "unknown",
             diff_excerpt=req.diff_excerpt,
+            llm_context=req.llm_context,
         )
 
     raise HTTPException(
@@ -55,17 +161,20 @@ def lookup_question(req: VerifyRequest) -> GeneratedQuestion:
 async def evaluate_with_llm(
     transcript: str, question: GeneratedQuestion
 ) -> Optional[ComprehensionScore]:
-    system = (
+    system_base = (
         "You are VibeCheck, a concise senior-engineer oral examiner. "
         "Evaluate whether the developer's spoken answer shows real understanding "
         "of the code diff. Return only valid JSON."
     )
+    system = (
+        f"{system_base}\n\nAdditional system instructions:\n{LLM_EXTRA_SYSTEM_INSTRUCTIONS}"
+        if LLM_EXTRA_SYSTEM_INSTRUCTIONS
+        else system_base
+    )
     prompt = {
         "question": question.question,
-        "file": question.file,
-        "code_context": question.code_context,
-        "diff_excerpt": question.diff_excerpt,
         "transcript": transcript,
+        "change_context": normalize_change_context(question),
         "rubric": {
             "what_it_does": "Does the answer correctly explain what changed?",
             "why_this_approach": "Does it explain why this implementation or approach makes sense?",
@@ -85,6 +194,9 @@ async def evaluate_with_llm(
             "spoken_response": "one or two conversational sentences to say out loud",
         },
     }
+    if LLM_EXTRA_PROMPT_INSTRUCTIONS:
+        prompt["additional_instructions"] = LLM_EXTRA_PROMPT_INSTRUCTIONS
+
     payload = await call_gemini_json(system, json.dumps(prompt))
     if not payload:
         return None
@@ -173,3 +285,119 @@ def weak_concepts(why_this_approach: float, tradeoffs: float) -> List[str]:
 
 def clamp_score(value: object) -> float:
     return max(0.0, min(1.0, float(value)))
+
+
+def normalize_change_context(question: GeneratedQuestion) -> dict:
+    raw = question.llm_context if isinstance(question.llm_context, dict) else {}
+
+    seed_raw = raw.get("seed") if isinstance(raw.get("seed"), dict) else {}
+    related_raw = raw.get("related") if isinstance(raw.get("related"), list) else []
+    impact_path_raw = raw.get("impactPath")
+    if not isinstance(impact_path_raw, list):
+        impact_path_raw = raw.get("impact_path")
+    if not isinstance(impact_path_raw, list):
+        impact_path_raw = []
+
+    seed = {
+        "name": str(seed_raw.get("name") or question.code_context or "unknown_function"),
+        "file": str(seed_raw.get("file") or question.file or "unknown_file"),
+        "summary": str(
+            seed_raw.get("summary")
+            or "Changed function under evaluation for comprehension and downstream impact."
+        ),
+        "changedLines": str(seed_raw.get("changedLines") or "unknown"),
+        "diff": str(seed_raw.get("diff") or question.diff_excerpt or ""),
+        "snippet": str(seed_raw.get("snippet") or seed_raw.get("keySnippet") or ""),
+    }
+
+    related = []
+    for item in related_raw:
+        if not isinstance(item, dict):
+            continue
+        related.append(
+            {
+                "relation": str(item.get("relation") or "calls"),
+                "name": str(item.get("name") or "unknown_function"),
+                "summary": str(
+                    item.get("summary")
+                    or f"Related function in {item.get('relation') or 'calls'} relationship."
+                ),
+                "snippet": str(item.get("snippet") or item.get("source") or ""),
+            }
+        )
+
+    impact_path = [str(item) for item in impact_path_raw if item is not None]
+    if not impact_path:
+        impact_path = [seed["name"]]
+
+    change_type = str(raw.get("changeType") or raw.get("change_type") or "logic_change")
+
+    return {
+        "seed": seed,
+        "impactPath": impact_path,
+        "related": related,
+        "changeType": change_type,
+        # Keep legacy fields so older prompt readers remain compatible.
+        "legacy": {
+            "file": question.file,
+            "code_context": question.code_context,
+            "diff_excerpt": question.diff_excerpt,
+        },
+    }
+
+
+def normalize_generated_question(item: Any) -> dict:
+    if not isinstance(item, dict):
+        return {}
+    return {
+        "changedFunction": item.get("changedFunction"),
+        "changedFunctionFile": item.get("changedFunctionFile"),
+        "calledBy": item.get("calledBy")
+        if isinstance(item.get("calledBy"), list)
+        else [],
+        "estimatedImpact": item.get("estimatedImpact"),
+        "question": item.get("question"),
+        "whyThisMatters": item.get("whyThisMatters"),
+        "llmContext": item.get("llmContext")
+        if isinstance(item.get("llmContext"), dict)
+        else None,
+    }
+
+
+def merge_question_fields(base_item: dict, candidate: dict) -> dict:
+    result = dict(base_item) if isinstance(base_item, dict) else {}
+    if not isinstance(candidate, dict):
+        result["question"] = ""
+        result["whyThisMatters"] = ""
+        return result
+
+    # Never carry template/base prose forward; these must come from Gemini.
+    result["question"] = ""
+    result["whyThisMatters"] = ""
+
+    for key in [
+        "changedFunction",
+        "changedFunctionFile",
+        "calledBy",
+        "estimatedImpact",
+        "question",
+        "whyThisMatters",
+        "llmContext",
+    ]:
+        value = candidate.get(key)
+        if value not in (None, "", []):
+            result[key] = value
+    if looks_like_legacy_template(result.get("question")):
+        result["question"] = ""
+    if looks_like_legacy_template(result.get("whyThisMatters")):
+        result["whyThisMatters"] = ""
+    return result
+
+
+def looks_like_legacy_template(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip().lower()
+    return text.startswith("walk through how `") or text.startswith(
+        "this function is directly changed in"
+    )

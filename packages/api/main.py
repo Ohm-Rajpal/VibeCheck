@@ -1,6 +1,13 @@
 """VibeCheck FastAPI backend entrypoint."""
+from pathlib import Path
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
+
+# Load variables from packages/api/.env when present.
+API_ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=API_ENV_PATH)
 
 from .routes import gate, growth, webhook
 

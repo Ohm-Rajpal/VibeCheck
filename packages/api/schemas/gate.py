@@ -1,5 +1,5 @@
 """Schemas for comprehension checkpoint routes."""
-from typing import List, Optional
+from typing import List, Optional, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,6 +13,7 @@ class GeneratedQuestion(BaseModel):
     code_context: str
     file: str
     diff_excerpt: str
+    llm_context: Optional[dict] = None
 
 
 class VerifyRequest(BaseModel):
@@ -22,6 +23,17 @@ class VerifyRequest(BaseModel):
     question: Optional[str] = None
     diff_excerpt: Optional[str] = None
     file: Optional[str] = None
+    llm_context: Optional[dict] = None
+
+
+class GenerateQuestionsRequest(BaseModel):
+    workspaceRoot: Optional[str] = None
+    stagedDiff: str = ""
+    localQuestions: List[dict] = Field(default_factory=list)
+
+
+class GenerateQuestionsResponse(BaseModel):
+    questions: List[dict] = Field(default_factory=list)
 
 
 class ComprehensionScore(BaseModel):

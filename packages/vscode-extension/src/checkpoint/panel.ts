@@ -23,12 +23,12 @@ export function openCheckpointPanel(
   trigger: CheckpointTrigger
 ): vscode.WebviewPanel {
   if (currentPanel) {
-    currentPanel.reveal(vscode.ViewColumn.Beside);
+    currentPanel.reveal(vscode.ViewColumn.Active, false);
   } else {
     currentPanel = vscode.window.createWebviewPanel(
       'vibecheckCheckpoint',
       'VibeCheck — Comprehension Check',
-      vscode.ViewColumn.Beside,
+      vscode.ViewColumn.Active,
       { enableScripts: true, retainContextWhenHidden: true }
     );
     currentPanel.onDidDispose(() => {
@@ -40,6 +40,7 @@ export function openCheckpointPanel(
   }
 
   currentPanel.webview.html = renderHtml(sessionId, questions, trigger);
+  currentPanel.reveal(vscode.ViewColumn.Active, false);
   return currentPanel;
 }
 
@@ -176,9 +177,8 @@ function normalizeQuestions(questions: unknown[]): PanelQuestion[] {
       changedFunctionSource: item.changedFunctionSource ?? '',
       calledBy: Array.isArray(item.calledBy) ? item.calledBy : [],
       estimatedImpact: item.estimatedImpact ?? 'Medium',
-      question: item.question ?? 'What changed here and what could break downstream?',
-      whyThisMatters:
-        item.whyThisMatters ?? 'This changed function may affect behavior outside the edited lines.',
+      question: typeof item.question === 'string' ? item.question : '',
+      whyThisMatters: typeof item.whyThisMatters === 'string' ? item.whyThisMatters : '',
     };
   });
 }

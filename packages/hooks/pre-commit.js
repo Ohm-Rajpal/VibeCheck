@@ -17,6 +17,8 @@ const POLL_MS = 500;
 const QUESTION_API_URL = process.env.VIBECHECK_QUESTION_API_URL || '';
 const QUESTION_API_KEY = process.env.VIBECHECK_QUESTION_API_KEY || '';
 const DEBUG_LLM_CONTEXT = process.env.VIBECHECK_DEBUG_LLM_CONTEXT === '1';
+const DEBUG_QUESTION_API = process.env.VIBECHECK_DEBUG_QUESTION_API === '1';
+const DEBUG_FLOW = process.env.VIBECHECK_DEBUG_FLOW === '1';
 
 // ── Agent detection ───────────────────────────────────────
 // keep in sync with packages/vscode-extension/src/detection/agents.ts
@@ -61,8 +63,25 @@ const claudeMd = fs.existsSync('./CLAUDE.md')
   const passFilePath = path.resolve(workspaceRoot, PASS_FILE);
   const failFilePath = path.resolve(workspaceRoot, FAIL_FILE);
   cleanupSignalFiles(passFilePath, failFilePath);
+  if (DEBUG_FLOW) {
+    console.log('[VibeCheck] Debug flow enabled');
+    console.log(`[VibeCheck] cwd=${workspaceRoot}`);
+    console.log(`[VibeCheck] staged diff chars=${diff.length}`);
+    console.log(
+      `[VibeCheck] QUESTION_API_URL=${QUESTION_API_URL || '<unset>'} | CHECKPOINT_PORT=${EXT_PORT}`
+    );
+  }
 
   const questions = await generateAstQuestions(workspaceRoot);
+  if (DEBUG_FLOW) {
+    console.log(`[VibeCheck] questions after generation=${Array.isArray(questions) ? questions.length : 0}`);
+    const first = Array.isArray(questions) ? questions[0] : undefined;
+    if (first && typeof first === 'object') {
+      console.log(
+        `[VibeCheck] first question preview question="${String(first.question ?? '').slice(0, 120)}" why="${String(first.whyThisMatters ?? '').slice(0, 120)}"`
+      );
+    }
+  }
   const panelQuestions = sanitizeQuestionsForPanel(questions);
   const payload = {
     session_id: `pre-commit-${Date.now()}`,
@@ -132,26 +151,29 @@ async function generateAstQuestions(workspaceRoot) {
       logLlmContexts(normalized);
     }
     if (!QUESTION_API_URL) {
+      if (DEBUG_FLOW) {
+        console.warn('[VibeCheck] QUESTION_API_URL is unset; skipping backend question generation');
+      }
       return normalized;
     }
 
+    if (DEBUG_QUESTION_API) {
+      console.log(`[VibeCheck] Question API enabled: ${QUESTION_API_URL}`);
+    }
     const apiQuestions = await tryGenerateQuestionsViaApi({
       workspaceRoot,
       localQuestions: normalized,
       stagedDiff: safeExec('git diff --cached --no-color'),
     });
+    if (DEBUG_QUESTION_API) {
+      const source = Array.isArray(apiQuestions) && apiQuestions.length > 0 ? 'api' : 'local-fallback';
+      console.log(`[VibeCheck] Question source selected: ${source}`);
+    }
     return Array.isArray(apiQuestions) && apiQuestions.length > 0
       ? apiQuestions
       : normalized;
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'unknown error';
-    return [
-      {
-        question:
-          'Which behavior changed in this staged diff, and what tests prove the previous behavior still works?',
-        why: `AST analyzer failed in pre-commit hook: ${message}`,
-      },
-    ];
+    return [];
   }
 }
 
@@ -171,6 +193,11 @@ function tryGenerateQuestionsViaApi({ workspaceRoot, localQuestions, stagedDiff 
       stagedDiff,
       localQuestions,
     });
+    if (DEBUG_FLOW) {
+      console.log(
+        `[VibeCheck] Calling question API with localQuestions=${localQuestions.length} stagedDiffChars=${stagedDiff.length}`
+      );
+    }
     const headers = {
       'Content-Type': 'application/json',
       'Content-Length': Buffer.byteLength(body),
@@ -195,31 +222,63 @@ function tryGenerateQuestionsViaApi({ workspaceRoot, localQuestions, stagedDiff 
           responseBody += chunk;
         });
         res.on('end', () => {
+          if (DEBUG_FLOW) {
+            console.log(
+              `[VibeCheck] Question API HTTP ${res.statusCode ?? 500} response chars=${responseBody.length}`
+            );
+          }
           if ((res.statusCode ?? 500) < 200 || (res.statusCode ?? 500) >= 300) {
+            if (DEBUG_QUESTION_API) {
+              console.warn(
+                `[VibeCheck] Question API fallback: HTTP ${res.statusCode ?? 500} body=${responseBody.slice(0, 300)}`
+              );
+            }
             resolve(null);
             return;
           }
           try {
             const parsed = JSON.parse(responseBody);
             if (Array.isArray(parsed)) {
+              if (DEBUG_QUESTION_API) {
+                console.log(`[VibeCheck] Question API returned array length=${parsed.length}`);
+              }
               resolve(parsed);
               return;
             }
             if (Array.isArray(parsed?.questions)) {
+              if (DEBUG_QUESTION_API) {
+                console.log(
+                  `[VibeCheck] Question API returned object.questions length=${parsed.questions.length}`
+                );
+              }
               resolve(parsed.questions);
               return;
             }
+            if (DEBUG_QUESTION_API) {
+              console.warn('[VibeCheck] Question API fallback: response JSON missing questions array');
+            }
             resolve(null);
           } catch {
+            if (DEBUG_QUESTION_API) {
+              console.warn('[VibeCheck] Question API fallback: response is not valid JSON');
+            }
             resolve(null);
           }
         });
       }
     );
 
-    req.on('error', () => resolve(null));
+    req.on('error', (error) => {
+      if (DEBUG_QUESTION_API) {
+        console.warn(`[VibeCheck] Question API fallback: request error ${error?.message ?? 'unknown'}`);
+      }
+      resolve(null);
+    });
     req.on('timeout', () => {
       req.destroy();
+      if (DEBUG_QUESTION_API) {
+        console.warn('[VibeCheck] Question API fallback: request timeout');
+      }
       resolve(null);
     });
     req.write(body);
@@ -238,12 +297,8 @@ function sanitizeQuestionsForPanel(questions) {
       changedFunctionFile: item.changedFunctionFile ?? 'unknown file',
       calledBy: Array.isArray(item.calledBy) ? item.calledBy : [],
       estimatedImpact: item.estimatedImpact ?? 'Medium',
-      question:
-        item.question ??
-        'Walk through this changed function and identify the riskiest downstream behavior.',
-      whyThisMatters:
-        item.whyThisMatters ??
-        'This changed function may affect behavior outside the edited lines.',
+      question: typeof item.question === 'string' ? item.question : '',
+      whyThisMatters: typeof item.whyThisMatters === 'string' ? item.whyThisMatters : '',
     };
   });
 }

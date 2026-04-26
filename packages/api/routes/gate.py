@@ -1,7 +1,10 @@
 """Gate routes - comprehension checkpoint endpoints."""
+import os
 from fastapi import APIRouter, File, Response, UploadFile
 
 from ..schemas.gate import (
+    GenerateQuestionsRequest,
+    GenerateQuestionsResponse,
     SpeakRequest,
     TranscribeResponse,
     VerifyRequest,
@@ -9,11 +12,13 @@ from ..schemas.gate import (
 )
 from ..services.checkpoints import (
     evaluate_transcript,
+    generate_questions_with_llm,
     lookup_question,
 )
 from ..services.elevenlabs import synthesize_speech, transcribe_audio
 
 router = APIRouter()
+DEBUG_FLOW = os.getenv("VIBECHECK_DEBUG_FLOW", "0") == "1"
 
 
 @router.post("/verify", response_model=VerifyResponse)
@@ -22,6 +27,27 @@ async def verify(req: VerifyRequest) -> VerifyResponse:
     question = lookup_question(req)
     score = await evaluate_transcript(req.transcript, question)
     return VerifyResponse(checkpoint_id=req.checkpoint_id, score=score)
+
+
+@router.post("/generate-questions", response_model=GenerateQuestionsResponse)
+async def generate_questions(req: GenerateQuestionsRequest) -> GenerateQuestionsResponse:
+    """Generate checkpoint questions from diff + function context."""
+    if DEBUG_FLOW:
+        print(
+            "[VibeCheck] /gate/generate-questions request: "
+            f"workspaceRoot={req.workspaceRoot or '<unset>'} "
+            f"stagedDiffChars={len(req.stagedDiff or '')} "
+            f"localQuestions={len(req.localQuestions or [])}"
+        )
+    questions = await generate_questions_with_llm(req.stagedDiff, req.localQuestions)
+    if DEBUG_FLOW:
+        first = questions[0] if questions else {}
+        print(
+            "[VibeCheck] /gate/generate-questions response: "
+            f"questions={len(questions)} "
+            f"first.question={str(first.get('question', ''))[:120]!r}"
+        )
+    return GenerateQuestionsResponse(questions=questions)
 
 
 @router.post("/transcribe", response_model=TranscribeResponse)

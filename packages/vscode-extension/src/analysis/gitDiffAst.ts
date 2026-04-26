@@ -96,10 +96,8 @@ export function generateQuestionsFromGitDiff(
           seed: { name: '<diff>', file: '<unknown>', source: '' },
           related: [],
         },
-        question:
-          'If the staged diff extraction is incomplete, what behavior change could ship without being questioned?',
-        whyThisMatters:
-          'No function-level AST matches were found in changed hunks, so reasoning about the overall commit intent is the safest fallback.',
+        question: '',
+        whyThisMatters: '',
       },
     ];
   }
@@ -132,8 +130,8 @@ export function generateQuestionsFromGitDiff(
           },
           related: [],
         },
-        question: buildLearningQuestion(changedFunction.functionName),
-        whyThisMatters: buildWhyThisMatters(changedFunction),
+        question: '',
+        whyThisMatters: '',
       });
       continue;
     }
@@ -160,8 +158,8 @@ export function generateQuestionsFromGitDiff(
           },
           related: [],
         },
-        question: buildLearningQuestion(changedFunction.functionName),
-        whyThisMatters: `${buildWhyThisMatters(changedFunction)} Symbol resolution was unavailable, so this prompt focuses on behavior and contracts.`,
+        question: '',
+        whyThisMatters: '',
       });
       continue;
     }
@@ -614,8 +612,8 @@ function generateAdaptiveQuestionForChangedFunction(
         },
         related,
       },
-      question: buildLearningQuestion(changedFunction.functionName),
-      whyThisMatters: buildWhyThisMatters(changedFunction),
+      question: '',
+      whyThisMatters: '',
     },
   ];
 }
@@ -844,14 +842,6 @@ function intersects(aStart: number, aEnd: number, bStart: number, bEnd: number):
   return aStart <= bEnd && bStart <= aEnd;
 }
 
-function buildLearningQuestion(functionName: string): string {
-  return `Walk through how \`${functionName}\` handles changed inputs. If this function misses a staged case, what downstream behavior would be incorrect?`;
-}
-
-function buildWhyThisMatters(changedFunction: ChangedFunction): string {
-  return `This function is directly changed in \`${changedFunction.filePath}\` (lines ${changedFunction.startLine}-${changedFunction.endLine}) and controls behavior that VibeCheck evaluates before commit.`;
-}
-
 function simplifyCallerLabels(callers: string[]): string[] {
   const simplified = callers
     .map((label) => label.split(' (')[0]?.trim() ?? label.trim())
@@ -1011,3 +1001,4 @@ function findFunctionSourceInText(
   visit(sourceFile);
   return result;
 }
+  
