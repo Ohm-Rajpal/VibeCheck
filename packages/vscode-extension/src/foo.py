@@ -1,2 +1,4 @@
 def foo():
-    print("foo")
+    message = "foo ready"
+    print(message)
+    return message

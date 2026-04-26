@@ -5,7 +5,7 @@ import { regionTracker, AIRegion } from './regionTracker';
 
 // ── Tunable thresholds ─────────────────────────────────────
 const AI_LINE_THRESHOLD = 5;          // single change must add more than this many lines to qualify
-const HUMAN_IDLE_MIN_MS = 300;        // gap of inactivity preceding the burst
+const HUMAN_IDLE_MIN_MS = 1000;        // gap of inactivity preceding the burst
 const BURST_AGGREGATION_MS = 1_500;   // fold subsequent fast edits into the same burst
 const MAX_BURST_DURATION_MS = 4_000;  // hard cap so bursts can't extend forever
 const TOAST_COOLDOWN_MS = 1_500;      // don't spam toasts on rapid bursts

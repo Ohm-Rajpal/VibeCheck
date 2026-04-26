@@ -81,6 +81,17 @@ export function generateQuestionsFromGitDiff(
     ...enrichedTsOrJsChangedFunctions,
     ...analyzePythonFiles(pythonFiles, workspaceRoot),
   ];
+  const prioritizedChangedFunctions = [...changedFunctions].sort((a, b) => {
+    const callerDelta = (b.callers?.length ?? 0) - (a.callers?.length ?? 0);
+    if (callerDelta !== 0) {
+      return callerDelta;
+    }
+    const fileDelta = a.filePath.localeCompare(b.filePath);
+    if (fileDelta !== 0) {
+      return fileDelta;
+    }
+    return a.functionName.localeCompare(b.functionName);
+  });
 
 
   if (changedFunctions.length === 0) {
@@ -109,7 +120,7 @@ export function generateQuestionsFromGitDiff(
     : undefined;
 
   const questions: Question[] = [];
-  for (const changedFunction of changedFunctions) {
+  for (const changedFunction of prioritizedChangedFunctions) {
     if (questions.length >= MAX_QUESTIONS) {
       break;
     }

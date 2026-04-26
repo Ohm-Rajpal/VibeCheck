@@ -1,0 +1,15 @@
+hard (excellent answer): 
+prioritizedChangedFunctions changes selection behavior under truncation, 
+not just presentation order. Since MAX_QUESTIONS limits output, sorting by 
+caller count first means high fan-out functions are promoted into the retained 
+set, while low-caller functions may be excluded. The tie-breakers 
+(filePath, then functionName) make ordering deterministic, so question generation 
+is stable across runs for the same diff. Net effect: the checkpoint emphasizes potential blast-radius over raw diff order.
+
+
+medium (weak answer): 
+bar just has more options now and prints stuff in a different way. It should still work mostly the same.
+
+
+weak (moderate answer): 
+foo() now stores the printed text in message and returns it. So besides printing, callers can use the returned value too.
