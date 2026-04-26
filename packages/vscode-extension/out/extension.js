@@ -84,24 +84,7 @@ function activate(context) {
     context.subscriptions.push(vscode.commands.registerCommand('vibecheck.showGrowth', () => {
         vscode.commands.executeCommand('workbench.view.extension.vibecheck');
     }), vscode.commands.registerCommand('vibecheck.simulateAIBurst', async () => {
-        // Find a usable text editor — `activeTextEditor` is undefined when
-        // focus is on a webview/panel, so fall back to any visible editor.
-        let editor = vscode.window.activeTextEditor;
-        if (!editor) {
-            editor = vscode.window.visibleTextEditors[0];
-        }
-        if (!editor) {
-            vscode.window.showWarningMessage('Open a file first, then run "VibeCheck: Simulate AI Burst".');
-            return;
-        }
-        // Reset cooldown + active-burst state so repeated invocations always
-        // fire a fresh toast, regardless of how recently a real burst happened.
-        (0, velocityDetector_1.resetDetectorForTest)();
-        // Brief delay so the reset's "lastChangeTime=0" propagates into the
-        // detector's idle calculation (the editor.edit fires synchronously).
-        await new Promise((r) => setTimeout(r, 50));
         const sample = [
-            '',
             'function simulatedAIFunction(input: string): string {',
             '  // This block was inserted by vibecheck.simulateAIBurst for',
             '  // detection-pipeline testing. Delete after verifying the toast.',
@@ -123,15 +106,43 @@ function activate(context) {
             '}',
             '',
         ].join('\n');
-        const pos = editor.selection.active;
-        await editor.edit((builder) => builder.insert(pos, sample));
+        const now = Date.now();
+        const burstId = `simulated-burst-${now}`;
+        const scratchUri = vscode.Uri.joinPath(context.globalStorageUri, `simulated-ai-burst-${now}.ts`);
+        await vscode.workspace.fs.createDirectory(context.globalStorageUri);
+        await vscode.workspace.fs.writeFile(scratchUri, Buffer.from(`// VibeCheck detection scratchpad\n${sample}`, 'utf8'));
+        const doc = await vscode.workspace.openTextDocument(scratchUri);
+        await vscode.window.showTextDocument(doc);
+        const region = {
+            id: `simulated-region-${now}`,
+            burstId,
+            file: scratchUri.fsPath,
+            startLine: 1,
+            endLine: sample.split('\n').length,
+            text: sample,
+            generatedAt: now,
+            status: 'unverified',
+        };
+        regionTracker_1.regionTracker.addBurst([region]);
+        (0, panel_1.openCheckpointPanel)(context, burstId, [
+            {
+                checkpoint_id: region.id,
+                question: `Walk me through what the AI-generated code in simulated-ai-burst.ts:${region.startLine + 1}-${region.endLine + 1} does, and why this approach over alternatives.`,
+                concept_tag: 'general comprehension',
+                code_context: `simulated-ai-burst.ts:${region.startLine + 1}-${region.endLine + 1}`,
+                file: 'simulated-ai-burst.ts',
+                diff_excerpt: region.text,
+            },
+        ], 'velocity');
     }), vscode.commands.registerCommand('vibecheck.openCheckpoint', () => {
         const regions = regionTracker_1.regionTracker.getUnverified();
         const questions = regions.map((r) => ({
+            checkpoint_id: r.id,
             question: `Walk me through ${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}.`,
             concept_tag: 'general comprehension',
             code_context: `${r.file.split('/').pop()}:${r.startLine + 1}-${r.endLine + 1}`,
             file: r.file.split('/').pop() ?? r.file,
+            diff_excerpt: r.text,
         }));
         (0, panel_1.openCheckpointPanel)(context, `manual-${Date.now()}`, questions.length ? questions : [], 'pre_commit');
     }));

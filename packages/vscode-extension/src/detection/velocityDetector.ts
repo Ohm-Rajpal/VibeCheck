@@ -253,10 +253,12 @@ async function maybeToast(
 function regionToQuestion(r: AIRegion) {
   const file = shortName(r.file);
   return {
+    checkpoint_id: r.id,
     question: `Walk me through what the AI-generated code in ${file}:${r.startLine + 1}-${r.endLine + 1} does, and why this approach over alternatives.`,
     concept_tag: 'general comprehension',
     code_context: `${file}:${r.startLine + 1}-${r.endLine + 1}`,
     file,
+    diff_excerpt: r.text,
   };
 }
 

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
 import { WebviewToExtension, ExtensionToWebview } from './messages';
+import { regionTracker } from '../detection/regionTracker';
 
 export type CheckpointTrigger = 'velocity' | 'pre_commit' | 'devin_pr';
 
@@ -40,7 +41,7 @@ function handleMessage(msg: WebviewToExtension): void {
       vscode.window.showInformationMessage(
         `✅ VibeCheck: marked ${msg.checkpointId} as understood.`
       );
-      // TODO: mark related AIRegion(s) as verified in regionTracker.
+      regionTracker.markStatus([msg.checkpointId], 'passed');
       break;
 
     case 'OVERRIDE':
