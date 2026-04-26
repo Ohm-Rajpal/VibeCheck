@@ -52,7 +52,7 @@ type Question = {
   whyThisMatters: string;
 };
 
-const MAX_QUESTIONS = 5;
+const MAX_QUESTIONS = 3;
 const MAX_GRAPH_DEPTH = 2;
 const MAX_GRAPH_NODES = 60;
 const MAX_RELATION_ITEMS = 5;

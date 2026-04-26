@@ -82,8 +82,36 @@ async def call_gemini_json(system: str, prompt: str) -> Optional[Any]:
 
     candidates = response_json.get("candidates", [])
     parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
-    text = "".join(part.get("text", "") for part in parts)
-    parsed = extract_json_object(text)
+
+    # Models may return mixed thought + answer parts. Parse non-thought chunks first.
+    non_thought_parts = [part.get("text", "") for part in parts if not part.get("thought")]
+    thought_parts = [part.get("text", "") for part in parts if part.get("thought")]
+
+    parsed: Optional[Any] = None
+    text = ""
+
+    for chunk in non_thought_parts:
+        text = chunk
+        parsed = extract_json_object(chunk)
+        if parsed is not None:
+            break
+
+    if parsed is None:
+        text = "".join(non_thought_parts)
+        if text:
+            parsed = extract_json_object(text)
+
+    if parsed is None:
+        for chunk in thought_parts:
+            text = chunk
+            parsed = extract_json_object(chunk)
+            if parsed is not None:
+                break
+
+    if parsed is None:
+        text = "".join(thought_parts)
+        if text:
+            parsed = extract_json_object(text)
     if DEBUG_FLOW:
         print(
             "[VibeCheck] call_gemini_json parsed response: "
