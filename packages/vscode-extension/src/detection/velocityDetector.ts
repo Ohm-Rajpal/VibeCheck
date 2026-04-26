@@ -295,3 +295,7 @@ export function resetDetectorForTest() {
   lastChangeTime = 0;
   log('detector state reset (test helper)');
 }
+
+
+
+

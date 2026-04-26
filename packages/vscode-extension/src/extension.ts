@@ -143,26 +143,46 @@ export function activate(context: vscode.ExtensionContext) {
       // Brief delay so the reset's "lastChangeTime=0" propagates into the
       // detector's idle calculation (the editor.edit fires synchronously).
       await new Promise((r) => setTimeout(r, 50));
+      // Auth-helper sample (clean, no bugs — interesting design
+      // choices). Gemma's question prompt is tuned to find specific
+      // implementation choices, so a buggy sample makes the answer
+      // obvious ("yeah, that's the bug"). With clean code Gemma asks
+      // *why* a choice was made (refresh window, delete-on-expiry,
+      // crypto.randomUUID), which forces real reasoning. Override
+      // becomes a tradeoff disagreement, not a bug fix.
       const sample = [
         '',
-        'function simulatedAIFunction(input: string): string {',
-        '  // This block was inserted by vibecheck.simulateAIBurst for',
-        '  // detection-pipeline testing. Delete after verifying the toast.',
-        '  const trimmed = input.trim();',
-        '  if (!trimmed) return "empty";',
-        '  const result = trimmed',
-        '    .split(/\\s+/)',
-        '    .map((word) => word.toLowerCase())',
-        '    .filter((w) => w.length > 2)',
-        '    .join("-");',
-        '  return result || "no-significant-tokens";',
+        '// Inserted by vibecheck.simulateAIBurst for detection-pipeline testing.',
+        '// Delete after verifying the toast.',
+        'const REFRESH_WINDOW_MS = 5 * 60 * 1000;',
+        'const SESSION_LIFETIME_MS = 60 * 60 * 1000;',
+        'const sessions: Map<string, { token: string; expiresAt: number }> = new Map();',
+        '',
+        'function login(userId: string, password: string): string | null {',
+        '  if (!password) return null;',
+        '  const token = crypto.randomUUID();',
+        '  sessions.set(userId, { token, expiresAt: Date.now() + SESSION_LIFETIME_MS });',
+        '  return token;',
         '}',
         '',
-        'class SimulatedAIClass {',
-        '  constructor(private readonly seed: number) {}',
-        '  next(): number {',
-        '    return (this.seed * 9301 + 49297) % 233280;',
+        'function isAuthenticated(userId: string, token: string): boolean {',
+        '  const session = sessions.get(userId);',
+        '  if (!session) return false;',
+        '  if (session.token !== token) return false;',
+        '  if (session.expiresAt <= Date.now()) {',
+        '    sessions.delete(userId);',
+        '    return false;',
         '  }',
+        '  return true;',
+        '}',
+        '',
+        'function refresh(userId: string, token: string): string | null {',
+        '  const session = sessions.get(userId);',
+        '  if (!session || session.token !== token) return null;',
+        '  if (session.expiresAt - Date.now() > REFRESH_WINDOW_MS) return null;',
+        '  const newToken = crypto.randomUUID();',
+        '  sessions.set(userId, { token: newToken, expiresAt: Date.now() + SESSION_LIFETIME_MS });',
+        '  return newToken;',
         '}',
         '',
       ].join('\n');
